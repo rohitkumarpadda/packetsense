@@ -1,0 +1,10 @@
+# 5G-PacketSense v2
+__pycache__/
+*.pyc
+.env
+data/
+data/GeoLite2-*.mmdb
+data/vpn_lists/*.txt
+data/pcap/
+data/parquet/
+.venv/

@@ -1,0 +1,3053 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>5G-PacketSense v2 | Network Analysis</title>
+		<meta
+			name="description"
+			content="Real-time 5G packet analysis, VPN detection, and geolocation mapping platform"
+		/>
+
+		<!-- Leaflet & Fonts -->
+		<link
+			rel="stylesheet"
+			href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+		/>
+		<link
+			href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap"
+			rel="stylesheet"
+		/>
+		<link
+			rel="stylesheet"
+			href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css"
+		/>
+
+		<!-- Libraries -->
+		<script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+
+		<style>
+			:root {
+				--bg-primary: #0a0e1a;
+				--bg-glass: rgba(12, 17, 32, 0.85);
+				--bg-glass-light: rgba(20, 28, 50, 0.7);
+				--border: rgba(255, 255, 255, 0.07);
+				--border-active: rgba(56, 189, 248, 0.4);
+				--shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
+				--accent: #38bdf8;
+				--tcp-color: #3b82f6;
+				--udp-color: #8b5cf6;
+				--vpn-color: #ef4444;
+				--local-color: #38bdf8;
+				--switch-color: #f59e0b;
+				--success: #22c55e;
+				--danger: #ef4444;
+				--text: #f1f5f9;
+				--text-muted: #64748b;
+				--text-dim: #475569;
+				--sidebar-w: 340px;
+				--topbar-h: 52px;
+				--bottombar-h: 36px;
+			}
+
+			* {
+				box-sizing: border-box;
+				margin: 0;
+				padding: 0;
+			}
+
+			body {
+				font-family: 'Inter', sans-serif;
+				background: var(--bg-primary);
+				color: var(--text);
+				height: 100vh;
+				overflow: hidden;
+			}
+
+			/* ── TOPBAR ─────────────────────────────────── */
+			.topbar {
+				position: fixed;
+				top: 0;
+				left: 0;
+				right: 0;
+				height: var(--topbar-h);
+				background: var(--bg-glass);
+				backdrop-filter: blur(16px);
+				border-bottom: 1px solid var(--border);
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				padding: 0 16px;
+				z-index: 100;
+			}
+			.topbar-left {
+				display: flex;
+				align-items: center;
+				gap: 12px;
+			}
+			.brand {
+				font-weight: 700;
+				font-size: 16px;
+				background: linear-gradient(135deg, #fff 0%, #94a3b8 100%);
+				-webkit-background-clip: text;
+				-webkit-text-fill-color: transparent;
+				display: flex;
+				align-items: center;
+				gap: 8px;
+			}
+			.brand i {
+				-webkit-text-fill-color: var(--accent);
+			}
+			.brand small {
+				font-weight: 400;
+				font-size: 11px;
+				opacity: 0.6;
+			}
+
+			.mode-badge {
+				display: flex;
+				align-items: center;
+				gap: 6px;
+				padding: 4px 12px;
+				border-radius: 20px;
+				font-size: 11px;
+				font-weight: 600;
+				border: 1px solid var(--border);
+			}
+			.mode-badge.live {
+				border-color: var(--success);
+				color: var(--success);
+			}
+			.mode-badge.pcap {
+				border-color: var(--accent);
+				color: var(--accent);
+			}
+			.mode-badge .dot-indicator {
+				width: 6px;
+				height: 6px;
+				border-radius: 50%;
+				background: currentColor;
+			}
+			.mode-badge.live .dot-indicator {
+				animation: pulse-dot 1.5s infinite;
+			}
+			@keyframes pulse-dot {
+				0%,
+				100% {
+					opacity: 1;
+				}
+				50% {
+					opacity: 0.3;
+				}
+			}
+
+			.topbar-right {
+				display: flex;
+				align-items: center;
+				gap: 6px;
+			}
+
+			.top-btn {
+				display: flex;
+				align-items: center;
+				gap: 6px;
+				padding: 6px 14px;
+				border-radius: 8px;
+				font-size: 12px;
+				font-weight: 500;
+				cursor: pointer;
+				border: 1px solid var(--border);
+				background: transparent;
+				color: var(--text-muted);
+				font-family: inherit;
+				transition: all 0.2s;
+			}
+			.top-btn:hover {
+				border-color: var(--accent);
+				color: var(--accent);
+			}
+			.top-btn.active {
+				background: rgba(56, 189, 248, 0.1);
+				border-color: var(--accent);
+				color: var(--accent);
+			}
+			.top-btn.danger {
+				border-color: rgba(239, 68, 68, 0.3);
+				color: var(--vpn-color);
+			}
+			.top-btn.danger:hover {
+				background: rgba(239, 68, 68, 0.1);
+			}
+
+			#sessionTimer {
+				font-size: 12px;
+				color: var(--switch-color);
+				font-weight: 600;
+				font-family: 'JetBrains Mono', monospace;
+			}
+
+			/* ── SIDEBAR ───────────────────────────────── */
+			.sidebar {
+				position: fixed;
+				top: var(--topbar-h);
+				left: 0;
+				width: var(--sidebar-w);
+				height: calc(100vh - var(--topbar-h) - var(--bottombar-h));
+				background: var(--bg-glass);
+				backdrop-filter: blur(16px);
+				border-right: 1px solid var(--border);
+				z-index: 50;
+				display: flex;
+				flex-direction: column;
+				transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+				overflow: hidden;
+			}
+			.sidebar.collapsed {
+				transform: translateX(calc(-1 * var(--sidebar-w)));
+			}
+			.sidebar-scroll {
+				flex: 1;
+				overflow-y: auto;
+				padding: 12px;
+			}
+
+			/* Accordion sections */
+			.section {
+				margin-bottom: 8px;
+				border: 1px solid var(--border);
+				border-radius: 10px;
+				overflow: hidden;
+			}
+			.section-header {
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				padding: 10px 14px;
+				cursor: pointer;
+				background: rgba(255, 255, 255, 0.02);
+				font-size: 11px;
+				font-weight: 600;
+				text-transform: uppercase;
+				letter-spacing: 0.5px;
+				color: var(--text-muted);
+				user-select: none;
+				transition: color 0.2s;
+			}
+			.section-header:hover {
+				color: var(--text);
+			}
+			.section-header i.chevron {
+				transition: transform 0.25s;
+				font-size: 10px;
+			}
+			.section.collapsed .section-header i.chevron {
+				transform: rotate(-90deg);
+			}
+			.section.collapsed .section-body {
+				display: none;
+			}
+			.section-body {
+				padding: 12px 14px;
+			}
+
+			/* Form elements */
+			.field {
+				margin-bottom: 10px;
+			}
+			.field label {
+				display: block;
+				font-size: 10px;
+				font-weight: 500;
+				color: var(--text-muted);
+				text-transform: uppercase;
+				letter-spacing: 0.4px;
+				margin-bottom: 4px;
+			}
+			.field select,
+			.field input[type='number'],
+			.field input[type='text'] {
+				width: 100%;
+				padding: 7px 10px;
+				font-size: 12px;
+				background: rgba(0, 0, 0, 0.3);
+				border: 1px solid var(--border);
+				color: #fff;
+				border-radius: 6px;
+				font-family: inherit;
+				outline: none;
+				transition: border-color 0.2s;
+			}
+			.field select:focus,
+			.field input:focus {
+				border-color: var(--accent);
+			}
+			.field select option {
+				background: #1e293b;
+			}
+
+			.radio-group {
+				display: flex;
+				gap: 8px;
+				margin-bottom: 10px;
+			}
+			.radio-group label {
+				flex: 1;
+				display: flex;
+				align-items: center;
+				gap: 5px;
+				cursor: pointer;
+				font-size: 11px;
+				color: var(--text-muted);
+				padding: 6px 10px;
+				border: 1px solid var(--border);
+				border-radius: 6px;
+				transition: all 0.2s;
+				text-transform: none;
+				letter-spacing: 0;
+			}
+			.radio-group label:has(input:checked) {
+				border-color: var(--accent);
+				color: var(--accent);
+				background: rgba(56, 189, 248, 0.06);
+			}
+			.radio-group input[type='radio'] {
+				width: auto;
+				margin: 0;
+				accent-color: var(--accent);
+			}
+
+			/* Buttons */
+			.btn-grid {
+				display: grid;
+				grid-template-columns: 1fr 1fr;
+				gap: 6px;
+				margin-bottom: 10px;
+			}
+			.btn {
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				gap: 6px;
+				padding: 8px 12px;
+				border-radius: 8px;
+				border: none;
+				font-size: 12px;
+				font-weight: 600;
+				font-family: inherit;
+				cursor: pointer;
+				transition: all 0.15s;
+			}
+			.btn:hover {
+				filter: brightness(1.1);
+			}
+			.btn:active {
+				transform: scale(0.97);
+			}
+			.btn-primary {
+				background: var(--accent);
+				color: #000;
+			}
+			.btn-success {
+				background: var(--success);
+				color: #fff;
+			}
+			.btn-danger {
+				background: var(--danger);
+				color: #fff;
+			}
+			.btn-outline {
+				background: transparent;
+				border: 1px solid var(--border);
+				color: var(--text-muted);
+			}
+			.btn-outline:hover {
+				border-color: var(--accent);
+				color: var(--accent);
+			}
+			.btn-full {
+				grid-column: 1 / -1;
+			}
+
+			/* Flow list */
+			.flow-list {
+				max-height: 200px;
+				overflow-y: auto;
+				border-radius: 6px;
+				background: rgba(0, 0, 0, 0.2);
+				border: 1px solid var(--border);
+			}
+			.flow-item {
+				padding: 8px 10px;
+				border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+				font-size: 11px;
+				cursor: pointer;
+				transition: background 0.15s;
+				display: flex;
+				justify-content: space-between;
+				align-items: center;
+			}
+			.flow-item:hover {
+				background: rgba(56, 189, 248, 0.06);
+			}
+			.flow-item:last-child {
+				border-bottom: none;
+			}
+			.flow-ips {
+				display: flex;
+				flex-direction: column;
+				gap: 1px;
+			}
+			.flow-ips .src {
+				color: var(--tcp-color);
+				font-family: 'JetBrains Mono', monospace;
+			}
+			.flow-ips .dst {
+				color: var(--udp-color);
+				font-family: 'JetBrains Mono', monospace;
+			}
+			.flow-stats {
+				text-align: right;
+				color: var(--text-dim);
+				font-size: 10px;
+			}
+			.flow-empty {
+				text-align: center;
+				padding: 20px;
+				color: var(--text-dim);
+				font-size: 11px;
+			}
+
+			/* Packet table */
+			.packet-table {
+				width: 100%;
+				border-collapse: collapse;
+				font-family: 'JetBrains Mono', monospace;
+				font-size: 10px;
+			}
+			.packet-table thead {
+				position: sticky;
+				top: 0;
+				background: rgba(10, 14, 26, 0.95);
+				z-index: 1;
+			}
+			.packet-table th {
+				padding: 5px 6px;
+				text-align: left;
+				color: var(--text-dim);
+				font-weight: 500;
+				border-bottom: 1px solid var(--border);
+			}
+			.packet-table td {
+				padding: 4px 6px;
+				border-bottom: 1px solid rgba(255, 255, 255, 0.02);
+			}
+			.packet-table tr {
+				cursor: pointer;
+				transition: background 0.1s;
+			}
+			.packet-table tbody tr:hover {
+				background: rgba(56, 189, 248, 0.05);
+			}
+			.packet-table .proto-tcp {
+				color: var(--tcp-color);
+			}
+			.packet-table .proto-udp {
+				color: var(--udp-color);
+			}
+			.packet-table .vpn-row {
+				background: rgba(239, 68, 68, 0.04);
+			}
+			.packet-table .vpn-row td:first-child {
+				border-left: 2px solid var(--vpn-color);
+			}
+			.packet-table .threat-row {
+				background: rgba(245, 158, 11, 0.04);
+			}
+			.packet-table .threat-row td:first-child {
+				border-left: 2px solid var(--switch-color);
+			}
+
+			.risk-badge {
+				font-size: 9px;
+				font-weight: 700;
+				padding: 1px 6px;
+				border-radius: 8px;
+				display: inline-block;
+				min-width: 24px;
+				text-align: center;
+			}
+			.risk-badge.risk-none { background: rgba(34,197,94,0.15); color: #22c55e; }
+			.risk-badge.risk-low { background: rgba(56,189,248,0.15); color: #38bdf8; }
+			.risk-badge.risk-medium { background: rgba(245,158,11,0.15); color: #f59e0b; }
+			.risk-badge.risk-high { background: rgba(239,68,68,0.15); color: #ef4444; }
+			.risk-badge.risk-critical { background: rgba(220,38,38,0.25); color: #dc2626; }
+
+			/* VPN Detail Modal */
+			.vpn-detail-modal {
+				position: fixed;
+				top: 0; left: 0; right: 0; bottom: 0;
+				background: rgba(0,0,0,0.6);
+				z-index: 200;
+				display: none;
+				align-items: center;
+				justify-content: center;
+			}
+			.vpn-detail-modal.open { display: flex; }
+			.vpn-detail-content {
+				background: var(--bg-glass);
+				backdrop-filter: blur(20px);
+				border: 1px solid var(--border);
+				border-radius: 14px;
+				padding: 24px;
+				min-width: 360px;
+				max-width: 440px;
+				max-height: 80vh;
+				overflow-y: auto;
+			}
+			.vpn-detail-content h3 {
+				font-size: 14px;
+				color: var(--vpn-color);
+				margin-bottom: 16px;
+				display: flex;
+				align-items: center;
+				gap: 8px;
+			}
+			.vpn-detail-row {
+				display: flex;
+				justify-content: space-between;
+				padding: 8px 0;
+				border-bottom: 1px solid rgba(255,255,255,0.04);
+				font-size: 12px;
+			}
+			.vpn-detail-row .label {
+				color: var(--text-dim);
+				font-weight: 500;
+			}
+			.vpn-detail-row .value {
+				color: var(--text);
+				font-family: 'JetBrains Mono', monospace;
+				font-size: 11px;
+				text-align: right;
+				max-width: 200px;
+			}
+			.vpn-detail-section {
+				margin-top: 14px;
+				padding: 10px 12px;
+				background: rgba(239,68,68,0.05);
+				border-radius: 8px;
+				border-left: 3px solid var(--vpn-color);
+			}
+			.vpn-detail-section h4 {
+				font-size: 10px;
+				text-transform: uppercase;
+				letter-spacing: 0.5px;
+				color: var(--vpn-color);
+				margin-bottom: 6px;
+			}
+			.vpn-detail-section p {
+				font-size: 11px;
+				color: var(--text-muted);
+				line-height: 1.5;
+			}
+			.vpn-detail-close {
+				margin-top: 16px;
+				width: 100%;
+				padding: 8px;
+				border-radius: 8px;
+				border: 1px solid var(--border);
+				background: transparent;
+				color: var(--text-muted);
+				cursor: pointer;
+				font-family: inherit;
+				font-size: 12px;
+				transition: all 0.2s;
+			}
+			.vpn-detail-close:hover {
+				border-color: var(--accent);
+				color: var(--accent);
+			}
+
+			.badge {
+				font-size: 10px;
+				font-weight: 600;
+				padding: 2px 8px;
+				border-radius: 10px;
+			}
+			.badge-accent {
+				background: rgba(56, 189, 248, 0.15);
+				color: var(--accent);
+			}
+			.badge-success {
+				background: rgba(34, 197, 94, 0.15);
+				color: var(--success);
+			}
+			.badge-danger {
+				background: rgba(239, 68, 68, 0.15);
+				color: var(--vpn-color);
+			}
+
+			.status-msg {
+				font-size: 10px;
+				padding: 6px 10px;
+				border-radius: 6px;
+				margin-bottom: 8px;
+				display: none;
+			}
+			.status-msg.ok {
+				display: block;
+				background: rgba(34, 197, 94, 0.1);
+				border: 1px solid rgba(34, 197, 94, 0.2);
+				color: var(--success);
+			}
+			.status-msg.err {
+				display: block;
+				background: rgba(239, 68, 68, 0.1);
+				border: 1px solid rgba(239, 68, 68, 0.2);
+				color: var(--vpn-color);
+			}
+
+			/* ── MAP ───────────────────────────────────── */
+			#map {
+				position: fixed;
+				top: var(--topbar-h);
+				left: var(--sidebar-w);
+				right: 0;
+				bottom: var(--bottombar-h);
+				z-index: 0;
+				background: #020617;
+				transition: left 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+			}
+			.sidebar.collapsed ~ #map {
+				left: 0;
+			}
+
+			/* Map legend */
+			.map-legend {
+				position: absolute;
+				bottom: 16px;
+				left: 16px;
+				background: var(--bg-glass);
+				backdrop-filter: blur(12px);
+				border: 1px solid var(--border);
+				border-radius: 10px;
+				padding: 10px 14px;
+				z-index: 20;
+				font-size: 10px;
+				min-width: 140px;
+			}
+			.map-legend h4 {
+				font-size: 9px;
+				text-transform: uppercase;
+				letter-spacing: 0.5px;
+				color: var(--text-dim);
+				margin-bottom: 6px;
+			}
+			.legend-item {
+				display: flex;
+				align-items: center;
+				gap: 8px;
+				margin-bottom: 4px;
+				color: var(--text-muted);
+			}
+			.legend-line {
+				width: 20px;
+				height: 2px;
+				border-radius: 1px;
+			}
+			.legend-dot {
+				width: 8px;
+				height: 8px;
+				border-radius: 50%;
+			}
+
+			/* ── OVERLAY PANEL (right side) ────────────── */
+			.overlay-panel {
+				position: fixed;
+				top: var(--topbar-h);
+				right: 0;
+				width: 380px;
+				height: calc(100vh - var(--topbar-h) - var(--bottombar-h));
+				background: var(--bg-glass);
+				backdrop-filter: blur(16px);
+				border-left: 1px solid var(--border);
+				z-index: 60;
+				transform: translateX(100%);
+				transition: transform 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+				display: flex;
+				flex-direction: column;
+			}
+			.overlay-panel.open {
+				transform: translateX(0);
+			}
+			.overlay-header {
+				padding: 12px 16px;
+				border-bottom: 1px solid var(--border);
+				display: flex;
+				justify-content: space-between;
+				align-items: center;
+			}
+			.overlay-header h3 {
+				font-size: 13px;
+				font-weight: 600;
+				text-transform: uppercase;
+				letter-spacing: 0.5px;
+				color: var(--text-muted);
+				display: flex;
+				align-items: center;
+				gap: 8px;
+			}
+			.overlay-close {
+				background: none;
+				border: none;
+				color: var(--text-dim);
+				cursor: pointer;
+				font-size: 14px;
+				padding: 4px;
+				transition: color 0.2s;
+			}
+			.overlay-close:hover {
+				color: var(--text);
+			}
+			.overlay-body {
+				flex: 1;
+				overflow-y: auto;
+				padding: 14px 16px;
+			}
+
+			/* Stats grid */
+			.stats-grid {
+				display: grid;
+				grid-template-columns: 1fr 1fr;
+				gap: 8px;
+				margin-bottom: 14px;
+			}
+			.stat-card {
+				background: rgba(255, 255, 255, 0.03);
+				padding: 12px 10px;
+				border-radius: 8px;
+				text-align: center;
+				border: 1px solid rgba(255, 255, 255, 0.04);
+			}
+			.stat-value {
+				font-size: 22px;
+				font-weight: 700;
+				line-height: 1.2;
+			}
+			.stat-label {
+				font-size: 9px;
+				color: var(--text-dim);
+				text-transform: uppercase;
+				letter-spacing: 0.3px;
+				margin-top: 3px;
+			}
+			.stat-card.vpn {
+				background: rgba(239, 68, 68, 0.05);
+				border-color: rgba(239, 68, 68, 0.12);
+			}
+
+			/* Data list (top talkers, ports, etc.) */
+			.data-list {
+				background: rgba(0, 0, 0, 0.2);
+				border-radius: 8px;
+				padding: 8px;
+				margin-bottom: 12px;
+				max-height: 150px;
+				overflow-y: auto;
+			}
+			.data-list-title {
+				font-size: 10px;
+				text-transform: uppercase;
+				letter-spacing: 0.4px;
+				color: var(--text-dim);
+				margin-bottom: 8px;
+				font-weight: 600;
+			}
+			.data-row {
+				display: flex;
+				justify-content: space-between;
+				align-items: center;
+				padding: 4px 6px;
+				border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+				font-size: 11px;
+			}
+			.data-row:last-child {
+				border-bottom: none;
+			}
+			.data-row .val {
+				color: var(--accent);
+				font-family: 'JetBrains Mono', monospace;
+				font-size: 10px;
+			}
+
+			/* VPN alert items */
+			.vpn-alert-item {
+				padding: 8px 10px;
+				border-radius: 6px;
+				margin-bottom: 6px;
+				background: rgba(239, 68, 68, 0.04);
+				border-left: 3px solid var(--vpn-color);
+				font-size: 11px;
+			}
+			.vpn-alert-item.medium {
+				border-left-color: var(--switch-color);
+			}
+			.vpn-alert-item .provider {
+				color: var(--vpn-color);
+				font-weight: 600;
+			}
+			.vpn-alert-item .ip {
+				color: var(--success);
+				font-family: 'JetBrains Mono', monospace;
+			}
+			.vpn-alert-item .meta {
+				color: var(--text-dim);
+				font-size: 10px;
+				margin-top: 2px;
+			}
+
+			/* ── BOTTOM BAR ────────────────────────────── */
+			.bottombar {
+				position: fixed;
+				bottom: 0;
+				left: 0;
+				right: 0;
+				height: var(--bottombar-h);
+				background: var(--bg-glass);
+				backdrop-filter: blur(12px);
+				border-top: 1px solid var(--border);
+				display: flex;
+				align-items: center;
+				padding: 0 16px;
+				gap: 20px;
+				z-index: 100;
+				font-size: 11px;
+				color: var(--text-dim);
+			}
+			.bottombar .metric {
+				display: flex;
+				align-items: center;
+				gap: 5px;
+			}
+			.bottombar .metric .val {
+				color: var(--text);
+				font-weight: 600;
+				font-family: 'JetBrains Mono', monospace;
+			}
+			.bottombar .vpn-count {
+				color: var(--vpn-color);
+			}
+
+			/* ── Leaflet marker animations ─────────────── */
+			@keyframes pulse-glow {
+				0%,
+				100% {
+					box-shadow: 0 0 6px 2px rgba(56, 189, 248, 0.35);
+				}
+				50% {
+					box-shadow: 0 0 14px 5px rgba(56, 189, 248, 0.65);
+				}
+			}
+			@keyframes vpn-pulse {
+				0%,
+				100% {
+					box-shadow: 0 0 4px 2px rgba(239, 68, 68, 0.25);
+				}
+				50% {
+					box-shadow: 0 0 18px 8px rgba(239, 68, 68, 0.7);
+				}
+			}
+			.leaflet-interactive.local-marker {
+				animation: pulse-glow 2s ease-in-out infinite !important;
+			}
+			.leaflet-interactive.vpn-marker {
+				animation: vpn-pulse 1.4s ease-in-out infinite !important;
+			}
+
+			/* ── Scrollbar ─────────────────────────────── */
+			::-webkit-scrollbar {
+				width: 4px;
+				height: 4px;
+			}
+			::-webkit-scrollbar-thumb {
+				background: rgba(255, 255, 255, 0.15);
+				border-radius: 10px;
+			}
+			::-webkit-scrollbar-track {
+				background: transparent;
+			}
+
+			/* ── AGENT CHAT PANEL ─────────────────────── */
+			.agent-fab {
+				position: fixed;
+				bottom: calc(var(--bottombar-h) + 16px);
+				right: 20px;
+				z-index: 90;
+				width: 48px;
+				height: 48px;
+				border-radius: 50%;
+				background: linear-gradient(135deg, #6366f1 0%, #38bdf8 100%);
+				border: none;
+				cursor: pointer;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				font-size: 20px;
+				color: #fff;
+				box-shadow: 0 4px 20px rgba(99,102,241,0.5);
+				transition: transform 0.2s, box-shadow 0.2s;
+				animation: agent-pulse 3s ease-in-out infinite;
+			}
+			.agent-fab:hover {
+				transform: scale(1.1);
+				box-shadow: 0 6px 28px rgba(99,102,241,0.7);
+			}
+			@keyframes agent-pulse {
+				0%, 100% { box-shadow: 0 4px 20px rgba(99,102,241,0.5); }
+				50% { box-shadow: 0 4px 30px rgba(56,189,248,0.7); }
+			}
+			.agent-panel {
+				position: fixed;
+				bottom: calc(var(--bottombar-h) + 76px);
+				right: 20px;
+				width: 400px;
+				height: 560px;
+				background: rgba(8, 12, 26, 0.92);
+				backdrop-filter: blur(24px);
+				border: 1px solid rgba(99,102,241,0.3);
+				border-radius: 18px;
+				z-index: 89;
+				display: flex;
+				flex-direction: column;
+				transform: scale(0.92) translateY(12px);
+				opacity: 0;
+				pointer-events: none;
+				transition: transform 0.25s cubic-bezier(0.34,1.56,0.64,1), opacity 0.2s;
+				box-shadow: 0 24px 64px rgba(0,0,0,0.6), 0 0 0 1px rgba(99,102,241,0.15);
+			}
+			.agent-panel.open {
+				transform: scale(1) translateY(0);
+				opacity: 1;
+				pointer-events: auto;
+			}
+			.agent-header {
+				padding: 14px 16px 10px;
+				border-bottom: 1px solid rgba(99,102,241,0.2);
+				display: flex;
+				align-items: center;
+				gap: 10px;
+			}
+			.agent-avatar {
+				width: 36px;
+				height: 36px;
+				border-radius: 50%;
+				background: linear-gradient(135deg, #6366f1, #38bdf8);
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				font-size: 16px;
+				flex-shrink: 0;
+			}
+			.agent-title-block { flex: 1; }
+			.agent-title {
+				font-size: 13px;
+				font-weight: 700;
+				background: linear-gradient(90deg, #a5b4fc, #38bdf8);
+				-webkit-background-clip: text;
+				-webkit-text-fill-color: transparent;
+			}
+			.agent-subtitle {
+				font-size: 10px;
+				color: var(--text-dim);
+				margin-top: 1px;
+			}
+			.agent-model-badge {
+				font-size: 9px;
+				padding: 2px 8px;
+				border-radius: 10px;
+				background: rgba(99,102,241,0.15);
+				color: #a5b4fc;
+				border: 1px solid rgba(99,102,241,0.25);
+				white-space: nowrap;
+			}
+			.agent-close-btn {
+				background: none;
+				border: none;
+				color: var(--text-dim);
+				cursor: pointer;
+				font-size: 14px;
+				padding: 4px;
+				transition: color 0.2s;
+			}
+			.agent-close-btn:hover { color: var(--text); }
+			/* Messages area */
+			.agent-messages {
+				flex: 1;
+				overflow-y: auto;
+				padding: 12px 14px;
+				display: flex;
+				flex-direction: column;
+				gap: 10px;
+			}
+			.agent-bubble {
+				max-width: 88%;
+				padding: 10px 13px;
+				border-radius: 14px;
+				font-size: 12px;
+				line-height: 1.6;
+				animation: bubble-in 0.2s ease-out;
+			}
+			@keyframes bubble-in {
+				from { opacity: 0; transform: translateY(6px); }
+				to   { opacity: 1; transform: translateY(0); }
+			}
+			.agent-bubble.user {
+				align-self: flex-end;
+				background: linear-gradient(135deg, rgba(99,102,241,0.35), rgba(56,189,248,0.2));
+				border: 1px solid rgba(99,102,241,0.3);
+				color: var(--text);
+				border-bottom-right-radius: 4px;
+			}
+			.agent-bubble.assistant {
+				align-self: flex-start;
+				background: rgba(255,255,255,0.04);
+				border: 1px solid var(--border);
+				color: var(--text);
+				border-bottom-left-radius: 4px;
+			}
+			.agent-bubble.assistant code {
+				background: rgba(255,255,255,0.08);
+				padding: 1px 5px;
+				border-radius: 4px;
+				font-family: 'JetBrains Mono', monospace;
+				font-size: 11px;
+				color: var(--accent);
+			}
+			.agent-bubble .tool-badge {
+				display: inline-flex;
+				align-items: center;
+				gap: 4px;
+				font-size: 9px;
+				padding: 2px 7px;
+				border-radius: 8px;
+				background: rgba(99,102,241,0.15);
+				color: #a5b4fc;
+				border: 1px solid rgba(99,102,241,0.2);
+				margin-bottom: 6px;
+			}
+			/* Typing indicator */
+			.agent-typing {
+				display: flex;
+				align-items: center;
+				gap: 4px;
+				padding: 10px 13px;
+				background: rgba(255,255,255,0.04);
+				border: 1px solid var(--border);
+				border-radius: 14px;
+				border-bottom-left-radius: 4px;
+				align-self: flex-start;
+				max-width: 70px;
+			}
+			.typing-dot {
+				width: 6px;
+				height: 6px;
+				border-radius: 50%;
+				background: #6366f1;
+				animation: typing-bounce 1.2s ease-in-out infinite;
+			}
+			.typing-dot:nth-child(2) { animation-delay: 0.15s; }
+			.typing-dot:nth-child(3) { animation-delay: 0.3s; }
+			@keyframes typing-bounce {
+				0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
+				30% { transform: translateY(-5px); opacity: 1; }
+			}
+			/* Quick chips */
+			.agent-chips {
+				padding: 0 14px 8px;
+				display: flex;
+				gap: 6px;
+				flex-wrap: wrap;
+			}
+			.agent-chip {
+				font-size: 10px;
+				padding: 4px 10px;
+				border-radius: 20px;
+				background: rgba(99,102,241,0.1);
+				border: 1px solid rgba(99,102,241,0.25);
+				color: #a5b4fc;
+				cursor: pointer;
+				transition: all 0.15s;
+				white-space: nowrap;
+			}
+			.agent-chip:hover {
+				background: rgba(99,102,241,0.25);
+				border-color: rgba(99,102,241,0.5);
+			}
+			/* Inject form */
+			.agent-inject-form {
+				display: none;
+				padding: 8px 14px;
+				background: rgba(99,102,241,0.06);
+				border-top: 1px solid rgba(99,102,241,0.15);
+				gap: 6px;
+				flex-wrap: wrap;
+				align-items: center;
+			}
+			.agent-inject-form.visible { display: flex; }
+			.agent-inject-form input, .agent-inject-form select {
+				flex: 1;
+				min-width: 90px;
+				padding: 5px 8px;
+				background: rgba(0,0,0,0.3);
+				border: 1px solid rgba(99,102,241,0.3);
+				color: #fff;
+				border-radius: 6px;
+				font-size: 11px;
+				font-family: 'JetBrains Mono', monospace;
+				outline: none;
+			}
+			.agent-inject-form input:focus, .agent-inject-form select:focus {
+				border-color: #6366f1;
+			}
+			.agent-inject-form select option { background: #1e293b; }
+			.agent-inject-btn {
+				padding: 5px 12px;
+				border-radius: 6px;
+				border: none;
+				background: linear-gradient(135deg, #6366f1, #38bdf8);
+				color: #fff;
+				font-size: 11px;
+				font-weight: 600;
+				cursor: pointer;
+				transition: filter 0.15s;
+				font-family: inherit;
+			}
+			.agent-inject-btn:hover { filter: brightness(1.15); }
+			/* Input row */
+			.agent-input-row {
+				padding: 10px 14px 14px;
+				display: flex;
+				gap: 8px;
+				align-items: flex-end;
+			}
+			.agent-input {
+				flex: 1;
+				background: rgba(255,255,255,0.05);
+				border: 1px solid rgba(99,102,241,0.25);
+				color: var(--text);
+				border-radius: 10px;
+				padding: 9px 12px;
+				font-size: 12px;
+				font-family: inherit;
+				resize: none;
+				outline: none;
+				transition: border-color 0.2s;
+				min-height: 38px;
+				max-height: 100px;
+				line-height: 1.5;
+			}
+			.agent-input:focus {
+				border-color: rgba(99,102,241,0.6);
+			}
+			.agent-input::placeholder { color: var(--text-dim); }
+			.agent-send-btn {
+				width: 36px;
+				height: 36px;
+				border-radius: 10px;
+				border: none;
+				background: linear-gradient(135deg, #6366f1, #38bdf8);
+				color: #fff;
+				cursor: pointer;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				font-size: 14px;
+				transition: filter 0.15s, transform 0.1s;
+				flex-shrink: 0;
+			}
+			.agent-send-btn:hover { filter: brightness(1.2); }
+			.agent-send-btn:active { transform: scale(0.93); }
+			.agent-send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+			/* Map inject flash */
+			@keyframes inject-flash {
+				0% { stroke-width: 4; stroke-opacity: 1; }
+				50% { stroke-width: 8; stroke-opacity: 0.8; }
+				100% { stroke-width: 4; stroke-opacity: 1; }
+			}
+			.injected-line { animation: inject-flash 1s ease-in-out 3; }
+
+			/* ── RESPONSIVE / MOBILE ───────────────────────────── */
+			/* Sidebar overlay backdrop (mobile only) */
+			.sidebar-overlay {
+				display: none;
+				position: fixed;
+				inset: 0;
+				background: rgba(0,0,0,0.5);
+				z-index: 49;
+				backdrop-filter: blur(2px);
+			}
+			.sidebar-overlay.active { display: block; }
+
+			/* Mobile hamburger — only shown on small screens */
+			#btnMobileMenu {
+				display: none;
+			}
+
+			@media (max-width: 767px) {
+				:root {
+					--sidebar-w: 300px;
+					--topbar-h: 48px;
+					--bottombar-h: 40px;
+				}
+
+				/* Topbar: hide text labels, show icons only */
+				#btnSidebar { display: none; }
+				#btnMobileMenu { display: flex; }
+				.top-btn span.btn-label { display: none; }
+				#btnAnalytics .fa-chart-pie + * { display: none; }
+				.brand small { display: none; }
+				#sessionTimer { font-size: 10px; }
+
+				/* Sidebar: overlay on mobile — default HIDDEN (collapsed by default on mobile) */
+				.sidebar {
+					z-index: 60;
+					transform: translateX(calc(-1 * var(--sidebar-w)));
+				}
+				.sidebar.mobile-open {
+					transform: translateX(0) !important;
+				}
+				/* On mobile, map is always full width */
+				#map {
+					left: 0 !important;
+					transition: none;
+				}
+				/* Disable the desktop collapsed~map rule on mobile by overriding */
+				.sidebar.collapsed ~ #map {
+					left: 0;
+				}
+
+				/* Agent panel: full screen on mobile */
+				.agent-panel {
+					right: 0;
+					left: 0;
+					bottom: var(--bottombar-h);
+					width: 100%;
+					height: 65vh;
+					border-radius: 18px 18px 0 0;
+				}
+				.agent-fab {
+					right: 12px;
+					bottom: calc(var(--bottombar-h) + 12px);
+					width: 44px;
+					height: 44px;
+					font-size: 18px;
+				}
+
+				/* Bottombar: compact, fewer metrics visible */
+				.bottombar {
+					gap: 10px;
+					padding: 0 10px;
+					font-size: 10px;
+					overflow-x: auto;
+				}
+				.bottombar .metric:nth-child(3) { display: none; } /* hide bandwidth on mobile */
+
+				/* Topbar compact */
+				.topbar { padding: 0 10px; }
+				.topbar-right { gap: 4px; }
+				.top-btn { padding: 5px 10px; font-size: 11px; }
+
+				/* Packet table: horizontal scroll */
+				.packet-table-wrap {
+					overflow-x: auto;
+					-webkit-overflow-scrolling: touch;
+				}
+				.packet-table {
+					min-width: 600px;
+				}
+
+				/* Overlay panels: full width on mobile */
+				.overlay-panel {
+					left: 0 !important;
+					right: 0 !important;
+					width: 100% !important;
+					max-height: 80vh;
+					border-radius: 16px 16px 0 0;
+				}
+
+				/* VPN detail modal */
+				.vpn-detail-content {
+					max-width: 95vw;
+					margin: 0 auto;
+				}
+			}
+
+			@media (min-width: 768px) and (max-width: 1023px) {
+				:root {
+					--sidebar-w: 280px;
+				}
+				.agent-panel {
+					width: 360px;
+				}
+				.top-btn { padding: 5px 10px; font-size: 11px; }
+			}
+
+			@media (max-width: 480px) {
+				.brand { font-size: 13px; }
+				.top-btn { padding: 5px 8px; }
+				/* Stack analytics label text */
+				#btnAnalytics { padding: 5px 8px; }
+				#btnVpn span.btn-label { display: none; }
+			}
+		</style>
+	</head>
+
+	<body>
+		<!-- ═══ TOPBAR ═══ -->
+		<div class="topbar">
+			<div class="topbar-left">
+				<div class="brand">
+					<i class="fa-solid fa-satellite-dish"></i>
+					5G-PacketSense <small>v2</small>
+				</div>
+				<div id="modeBadge" class="mode-badge">
+					<div class="dot-indicator"></div>
+					<span id="modeText">Idle</span>
+				</div>
+				<span id="sessionTimer"></span>
+			</div>
+			<div class="topbar-right">
+				<button id="btnMobileMenu" class="top-btn" onclick="toggleMobileSidebar()" title="Menu">
+					<i class="fa-solid fa-bars"></i>
+				</button>
+				<button id="btnAgent" class="top-btn" onclick="toggleOverlay('agentPanel')">
+					<i class="fa-solid fa-robot"></i> Agent
+				</button>
+				<button
+					id="btnSidebar"
+					class="top-btn active"
+					onclick="toggleSidebar()"
+				>
+					<i class="fa-solid fa-bars"></i>
+				</button>
+				<button
+					id="btnAnalytics"
+					class="top-btn"
+					onclick="toggleOverlay('analyticsPanel')"
+				>
+					<i class="fa-solid fa-chart-pie"></i> Analytics
+				</button>
+				<button
+					id="btnVpn"
+					class="top-btn danger"
+					onclick="toggleOverlay('vpnPanel')"
+				>
+					<i class="fa-solid fa-shield-halved"></i> VPN
+					<span
+						id="vpnBadgeTop"
+						class="badge badge-danger"
+						style="display: none"
+						>0</span
+					>
+				</button>
+			</div>
+		</div>
+
+		<!-- Mobile sidebar overlay -->
+		<div id="sidebarOverlay" class="sidebar-overlay" onclick="closeMobileSidebar()"></div>
+
+		<!-- ═══ SIDEBAR ═══ -->
+		<div id="sidebar" class="sidebar">
+			<div class="sidebar-scroll">
+				<!-- Capture Section -->
+				<div class="section" id="sectionCapture">
+					<div class="section-header" onclick="toggleSection('sectionCapture')">
+						<span><i class="fa-solid fa-network-wired"></i> &nbsp;Capture</span>
+						<i class="fa-solid fa-chevron-down chevron"></i>
+					</div>
+					<div class="section-body">
+						<div class="radio-group">
+							<label
+								><input
+									type="radio"
+									name="captureMode"
+									value="local"
+									checked
+									onchange="toggleCaptureUI()"
+								/>
+								Local</label
+							>
+							<label
+								><input
+									type="radio"
+									name="captureMode"
+									value="switch"
+									onchange="toggleCaptureUI()"
+								/>
+								Switch</label
+							>
+						</div>
+						<div class="field">
+							<label>Interface</label>
+							<select id="ifaceSelect">
+								<option value="">Loading...</option>
+							</select>
+						</div>
+						<div class="field" id="subnetField" style="display: none">
+							<label>Monitored Subnet</label>
+							<input type="text" id="subnetInput" value="172.16.0.0/16" />
+						</div>
+						<div class="field">
+							<label>Map Refresh Interval</label>
+							<select id="durationSelect">
+								<option value="30">30 Seconds</option>
+								<option value="60">1 Minute</option>
+								<option value="120" selected>2 Minutes</option>
+								<option value="300">5 Minutes</option>
+								<option value="600">10 Minutes</option>
+							</select>
+						</div>
+						<div class="btn-grid">
+							<button
+								id="btnCapture"
+								class="btn btn-success"
+								onclick="toggleCapture()"
+							>
+								<i class="fa-solid fa-play"></i> Start
+							</button>
+							<button
+								id="btnPause"
+								class="btn btn-outline"
+								onclick="pauseCapture()"
+								style="display: none"
+							>
+								<i class="fa-solid fa-pause"></i> Pause
+							</button>
+							<button
+								class="btn btn-outline"
+								onclick="document.getElementById('pcapInput').click()"
+							>
+								<i class="fa-solid fa-file-import"></i> PCAP
+							</button>
+							<button class="btn btn-outline" onclick="resetAll()">
+								<i class="fa-solid fa-broom"></i> Reset
+							</button>
+						</div>
+						<button
+							id="btnStopSave"
+							class="btn btn-danger btn-full"
+							onclick="stopSave()"
+							style="display: none; width: 100%"
+						>
+							<i class="fa-solid fa-floppy-disk"></i> Stop & Save
+						</button>
+						<input
+							type="file"
+							id="pcapInput"
+							accept=".pcap,.pcapng"
+							style="display: none"
+							onchange="uploadPcap(this)"
+						/>
+						<div id="statusMsg" class="status-msg"></div>
+					</div>
+				</div>
+
+				<!-- Filters Section -->
+				<div class="section" id="sectionFilters">
+					<div class="section-header" onclick="toggleSection('sectionFilters')">
+						<span><i class="fa-solid fa-filter"></i> &nbsp;Filters</span>
+						<i class="fa-solid fa-chevron-down chevron"></i>
+					</div>
+					<div class="section-body">
+						<div class="field">
+							<label>Protocol</label>
+							<select id="protocolFilter" onchange="applyFilters()">
+								<option value="">All Protocols</option>
+								<option value="TCP">TCP</option>
+								<option value="UDP">UDP</option>
+							</select>
+						</div>
+						<div class="field">
+							<label>Flow Limit</label>
+							<input
+								type="number"
+								id="limitInput"
+								value="100"
+								min="10"
+								max="1000"
+								onchange="applyFilters()"
+							/>
+						</div>
+						<div class="field">
+							<label>Min Packets</label>
+							<input
+								type="number"
+								id="minPackets"
+								value="1"
+								min="1"
+								max="100"
+								onchange="applyFilters()"
+							/>
+						</div>
+						<button
+							class="btn btn-primary"
+							onclick="applyFilters()"
+							style="width: 100%"
+						>
+							<i class="fa-solid fa-play"></i> Apply
+						</button>
+					</div>
+				</div>
+
+				<!-- Flows Section -->
+				<div class="section" id="sectionFlows">
+					<div class="section-header" onclick="toggleSection('sectionFlows')">
+						<span
+							><i class="fa-solid fa-stream"></i> &nbsp;Flows
+							<span id="flowCount" class="badge badge-accent">0</span></span
+						>
+						<i class="fa-solid fa-chevron-down chevron"></i>
+					</div>
+					<div class="section-body" style="padding: 0">
+						<div id="flowList" class="flow-list">
+							<div class="flow-empty">
+								<i
+									class="fa-solid fa-inbox"
+									style="
+										font-size: 20px;
+										opacity: 0.3;
+										display: block;
+										margin-bottom: 6px;
+									"
+								></i
+								>No data loaded
+							</div>
+						</div>
+					</div>
+				</div>
+
+				<!-- Packets Section -->
+				<div class="section" id="sectionPackets" style="display: none">
+					<div class="section-header" onclick="toggleSection('sectionPackets')">
+						<span
+							><i class="fa-solid fa-list"></i> &nbsp;Packets
+							<span id="pktCount" class="badge badge-success">0</span></span
+						>
+						<i class="fa-solid fa-chevron-down chevron"></i>
+					</div>
+					<div
+						class="section-body"
+						style="padding: 0; max-height: 260px; overflow-y: auto"
+					>
+						<div class="packet-table-wrap">
+						<table class="packet-table">
+							<thead>
+								<tr>
+									<th>#</th>
+									<th>Time</th>
+									<th>Src</th>
+									<th>Dst</th>
+									<th>P</th>
+									<th>Len</th>
+									<th>Risk</th>
+								</tr>
+							</thead>
+							<tbody id="pktBody">
+								<tr>
+									<td
+										colspan="7"
+										style="
+											text-align: center;
+											padding: 12px;
+											color: var(--text-dim);
+										"
+									>
+										No packets yet
+									</td>
+								</tr>
+							</tbody>
+						</table>
+						</div>
+						</div>
+				</div>
+			</div>
+		</div>
+
+		<!-- ═══ MAP ═══ -->
+		<div id="map">
+			<div class="map-legend" id="mapLegend">
+				<h4>Legend</h4>
+				<div class="legend-item">
+					<div class="legend-dot" style="background: var(--local-color)"></div>
+					Your IP (local)
+				</div>
+				<div class="legend-item">
+					<div class="legend-dot" style="background: var(--tcp-color)"></div>
+					TCP endpoint
+				</div>
+				<div class="legend-item">
+					<div class="legend-dot" style="background: var(--udp-color)"></div>
+					UDP endpoint
+				</div>
+				<div class="legend-item">
+					<div class="legend-dot" style="background: var(--vpn-color)"></div>
+					VPN detected
+				</div>
+				<div class="legend-item">
+					<div class="legend-line" style="background: var(--tcp-color)"></div>
+					TCP flow
+				</div>
+				<div class="legend-item">
+					<div class="legend-line" style="background: var(--udp-color)"></div>
+					UDP flow
+				</div>
+				<div class="legend-item">
+					<div
+						class="legend-line"
+						style="
+							background: var(--vpn-color);
+							height: 2px;
+							border-top: 2px dashed var(--vpn-color);
+							background: none;
+						"
+					></div>
+					VPN flow
+				</div>
+			</div>
+		</div>
+
+		<!-- ═══ ANALYTICS PANEL ═══ -->
+		<div id="analyticsPanel" class="overlay-panel">
+			<div class="overlay-header">
+				<h3><i class="fa-solid fa-chart-pie"></i> Analytics</h3>
+				<button class="overlay-close" onclick="toggleOverlay('analyticsPanel')">
+					<i class="fa-solid fa-xmark"></i>
+				</button>
+			</div>
+			<div class="overlay-body">
+				<div class="stats-grid">
+					<div class="stat-card">
+						<div id="sTotalPkts" class="stat-value">-</div>
+						<div class="stat-label">Total Packets</div>
+					</div>
+					<div class="stat-card">
+						<div
+							id="sUniqueIPs"
+							class="stat-value"
+							style="color: var(--accent)"
+						>
+							-
+						</div>
+						<div class="stat-label">Unique IPs</div>
+					</div>
+					<div class="stat-card">
+						<div
+							id="sTotalBytes"
+							class="stat-value"
+							style="color: var(--success)"
+						>
+							-
+						</div>
+						<div class="stat-label">Total Data</div>
+					</div>
+					<div class="stat-card">
+						<div
+							id="sAvgPkt"
+							class="stat-value"
+							style="color: var(--switch-color)"
+						>
+							-
+						</div>
+						<div class="stat-label">Avg Packet</div>
+					</div>
+					<div class="stat-card">
+						<div id="sDuration" class="stat-value" style="color: #8b5cf6">
+							-
+						</div>
+						<div class="stat-label">Duration</div>
+					</div>
+					<div class="stat-card">
+						<div id="sPktRate" class="stat-value" style="color: #ec4899">-</div>
+						<div class="stat-label">Packets/sec</div>
+					</div>
+					<div class="stat-card">
+						<div
+							id="sUnknownLoc"
+							class="stat-value"
+							style="color: var(--vpn-color)"
+						>
+							-
+						</div>
+						<div class="stat-label">Unknown Locs</div>
+					</div>
+					<div class="stat-card vpn">
+						<div
+							id="sVpnCount"
+							class="stat-value"
+							style="color: var(--vpn-color)"
+						>
+							-
+						</div>
+						<div class="stat-label">🔒 VPN IPs</div>
+					</div>
+				</div>
+				<div class="data-list-title">Top Talkers (by traffic)</div>
+				<div id="topTalkers" class="data-list">
+					<div class="flow-empty">Loading...</div>
+				</div>
+				<div class="data-list-title">Top Destination Ports</div>
+				<div id="topPorts" class="data-list">
+					<div class="flow-empty">Loading...</div>
+				</div>
+				<div class="data-list-title">Protocol Distribution</div>
+				<div id="protoDist" class="data-list">
+					<div class="flow-empty">Loading...</div>
+				</div>
+			</div>
+		</div>
+
+		<!-- ═══ VPN PANEL ═══ -->
+		<div id="vpnPanel" class="overlay-panel">
+			<div class="overlay-header">
+				<h3><i class="fa-solid fa-shield-halved"></i> VPN Detections</h3>
+				<button class="overlay-close" onclick="toggleOverlay('vpnPanel')">
+					<i class="fa-solid fa-xmark"></i>
+				</button>
+			</div>
+			<div class="overlay-body" id="vpnList">
+				<div class="flow-empty">No VPN detected yet</div>
+			</div>
+		</div>
+
+		<!-- ═══ VPN DETAIL MODAL ═══ -->
+		<div id="vpnDetailModal" class="vpn-detail-modal" onclick="if(event.target===this)closeVpnDetail()">
+			<div class="vpn-detail-content" id="vpnDetailContent">
+			</div>
+		</div>
+
+		<!-- ═══ AGENT CHAT PANEL ═══ -->
+		<div id="agentPanel" class="agent-panel">
+			<!-- Header -->
+			<div class="agent-header">
+				<div class="agent-avatar">🤖</div>
+				<div class="agent-title-block">
+					<div class="agent-title">PacketSense AI</div>
+					<div class="agent-subtitle" id="agentStatusLine">Initializing...</div>
+				</div>
+				<span class="agent-model-badge" id="agentModelBadge">gemma-4-31b:free</span>
+				<button class="agent-close-btn" onclick="toggleAgentPanel()"><i class="fa-solid fa-xmark"></i></button>
+			</div>
+			<!-- Message area -->
+			<div id="agentMessages" class="agent-messages">
+				<!-- Welcome bubble -->
+				<div class="agent-bubble assistant">
+					<div class="tool-badge"><i class="fa-solid fa-circle-info"></i> Welcome</div>
+					<div>👋 I'm your PacketSense AI agent with <strong>multi-step reasoning</strong>. I can:</div>
+					<ul style="margin:6px 0 0 14px;line-height:1.8">
+						<li>🔍 <strong>Scan anomalies</strong> — proactive risk scanning</li>
+						<li>📊 <strong>Analyze traffic</strong> — protocol &amp; port patterns</li>
+						<li>🛡️ <strong>Threat summary</strong> — FireHOL/IPsum/AbuseIPDB</li>
+						<li>🔒 <strong>VPN signals</strong> — full confidence breakdown</li>
+						<li>📡 <strong>Bandwidth analysis</strong> — by protocol &amp; port</li>
+						<li>📍 <strong>Inject packets</strong> on the map</li>
+						<li>🔎 Check any IP's geo, VPN &amp; threat status</li>
+					</ul>
+				</div>
+			</div>
+			<!-- Quick chips -->
+			<div class="agent-chips" id="agentChips">
+				<span class="agent-chip" onclick="agentSendChip('Scan for anomalies')">🔍 Scan</span>
+				<span class="agent-chip" onclick="agentSendChip('Analyze traffic patterns')">📊 Traffic</span>
+				<span class="agent-chip" onclick="agentSendChip('Threat intelligence summary')">🛡️ Threats</span>
+				<span class="agent-chip" onclick="agentSendChip('Show VPN detections')">🔒 VPN</span>
+				<span class="agent-chip" onclick="agentSendChip('Bandwidth analysis')">📡 Bandwidth</span>
+				<span class="agent-chip" onclick="agentSendChip('Show capture stats')">📈 Stats</span>
+				<span class="agent-chip" onclick="agentSendChip('Top talkers by traffic')">🌐 Talkers</span>
+				<span class="agent-chip" onclick="toggleInjectForm()">📍 Inject</span>
+			</div>
+			<!-- Custom packet inject form -->
+			<div class="agent-inject-form" id="agentInjectForm">
+				<input id="injectSrc" type="text" placeholder="Src IP (e.g. 8.8.8.8)" />
+				<input id="injectDst" type="text" placeholder="Dst IP (e.g. 1.1.1.1)" />
+				<select id="injectProto">
+					<option value="TCP">TCP</option>
+					<option value="UDP">UDP</option>
+					<option value="ICMP">ICMP</option>
+				</select>
+				<button class="agent-inject-btn" onclick="agentInjectPacket()"><i class="fa-solid fa-location-dot"></i> Plot</button>
+			</div>
+			<!-- Input -->
+			<div class="agent-input-row">
+				<textarea
+					id="agentInput"
+					class="agent-input"
+					placeholder="Ask me anything about your packets..."
+					rows="1"
+					onkeydown="agentHandleKey(event)"
+					oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,100)+'px'"
+				></textarea>
+				<button id="agentSendBtn" class="agent-send-btn" onclick="agentSend()">
+					<i class="fa-solid fa-paper-plane"></i>
+				</button>
+			</div>
+		</div>
+
+		<!-- Agent FAB (floating action button) -->
+		<button class="agent-fab" id="agentFab" onclick="toggleAgentPanel()" title="PacketSense AI Agent">
+			🤖
+		</button>
+
+		<!-- ═══ BOTTOM BAR ═══ -->
+		<div class="bottombar">
+			<div class="metric">
+				<i
+					class="fa-solid fa-circle"
+					style="font-size: 6px; color: var(--success)"
+				></i>
+				Connected
+			</div>
+			<div class="metric">Packets: <span id="bPkts" class="val">0</span></div>
+			<div class="metric">
+				Bandwidth: <span id="bBw" class="val">0 B/s</span>
+			</div>
+			<div class="metric">IPs: <span id="bIPs" class="val">0</span></div>
+			<div class="metric vpn-count">
+				<i class="fa-solid fa-shield-halved"></i> VPN:
+				<span id="bVpn" class="val">0</span>
+			</div>
+		</div>
+
+		<!-- ═══ SCRIPTS ═══ -->
+		<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+		<script>
+			// ================================================================
+			// GLOBALS
+			// ================================================================
+			const map = L.map('map', {
+				zoomControl: false,
+				attributionControl: false,
+			}).setView([25.4279, 81.7710], 5);
+			L.tileLayer(
+				'https://tiles.stadiamaps.com/tiles/alidade_smooth_dark/{z}/{x}/{y}{r}.png',
+				{
+					maxZoom: 20,
+					attribution: '&copy; <a href="https://stadiamaps.com/">Stadia Maps</a>, &copy; <a href="https://openmaptiles.org/">OpenMapTiles</a> &copy; <a href="https://openstreetmap.org">OpenStreetMap</a>'
+				},
+			).addTo(map);
+
+			let socket = null,
+				liveMode = false,
+				pcapMode = false,
+				paused = false;
+			let liveMarkers = {},
+				livePaths = [],
+				flowLines = [],
+				markers = [];
+			let localIPs = [],
+				detectedVPNs = new Set();
+			let sessionTimer = null,
+				sessionEndTime = null;
+			let pktCounter = 0;
+
+			// ── Double-buffer system ──
+			const CYCLE_MS = 120000; // 2 minutes per cycle
+			let packetBuffer = [];
+			let displayLayerGroup = L.layerGroup().addTo(map);
+			let cycleTimer = null;
+			let cycleStart = 0;
+			let cyclePhase = 'idle';
+			let cycleCount = 0;
+			let bufferMarkerKeys = new Set();
+
+			// Color palette
+			const COLORS = {
+				tcp: '#3b82f6',
+				udp: '#8b5cf6',
+				vpn: '#ef4444',
+				local: '#38bdf8',
+				switch: '#f59e0b',
+				normal: '#22c55e',
+			};
+
+			// ================================================================
+			// SIDEBAR & OVERLAY
+			// ================================================================
+			function toggleSidebar() {
+				const sb = document.getElementById('sidebar');
+				sb.classList.toggle('collapsed');
+				document.getElementById('btnSidebar').classList.toggle('active');
+				setTimeout(() => map.invalidateSize(), 350);
+			}
+
+			function toggleMobileSidebar() {
+				const sb = document.getElementById('sidebar');
+				const overlay = document.getElementById('sidebarOverlay');
+				const isOpen = sb.classList.contains('mobile-open');
+				if (isOpen) {
+					sb.classList.remove('mobile-open');
+					overlay.classList.remove('active');
+				} else {
+					sb.classList.add('mobile-open');
+					overlay.classList.add('active');
+				}
+			}
+			function closeMobileSidebar() {
+				const sb = document.getElementById('sidebar');
+				const overlay = document.getElementById('sidebarOverlay');
+				sb.classList.remove('mobile-open');
+				overlay.classList.remove('active');
+			}
+
+			function toggleSection(id) {
+				document.getElementById(id).classList.toggle('collapsed');
+			}
+
+			function toggleOverlay(id) {
+				const panel = document.getElementById(id);
+				const wasOpen = panel.classList.contains('open');
+				// Close all overlays first
+				document
+					.querySelectorAll('.overlay-panel')
+					.forEach((p) => p.classList.remove('open'));
+				if (!wasOpen) panel.classList.add('open');
+			}
+
+			function toggleCaptureUI() {
+				const mode = document.querySelector(
+					'input[name="captureMode"]:checked',
+				).value;
+				document.getElementById('subnetField').style.display =
+					mode === 'switch' ? 'block' : 'none';
+			}
+
+			// ================================================================
+			// MODE MANAGEMENT
+			// ================================================================
+			function setMode(mode, text) {
+				const badge = document.getElementById('modeBadge');
+				const modeText = document.getElementById('modeText');
+				badge.className = 'mode-badge ' + mode;
+				modeText.textContent = text;
+			}
+
+			// ================================================================
+			// CAPTURE CONTROL
+			// ================================================================
+			async function loadInterfaces() {
+				try {
+					const res = await fetch('/api/interfaces');
+					const data = await res.json();
+					const sel = document.getElementById('ifaceSelect');
+					if (data.interfaces && data.interfaces.length > 0) {
+						sel.innerHTML = '<option value="">All Interfaces</option>';
+						data.interfaces.forEach((i) => {
+							let label = i.name;
+							if (i.description && i.description !== i.name)
+								label += ` - ${i.description}`;
+							if (i.ips && i.ips.length > 0) label += ` (${i.ips[0]})`;
+							const icon = i.is_wifi ? '📶' : i.is_ethernet ? '🔌' : '';
+							sel.innerHTML += `<option value="${i.name}">${icon} ${label}</option>`;
+						});
+					}
+				} catch (e) {
+					console.error('interface load error', e);
+				}
+			}
+
+			async function fetchLocalIPs() {
+				try {
+					const res = await fetch('/api/local_ips');
+					const data = await res.json();
+					localIPs = data.local_ips || [];
+					if (localIPs.length > 0) {
+						const parts = localIPs[0].split('.');
+						if (parts.length === 4) {
+							const si = document.getElementById('subnetInput');
+							if (si && si.value === '172.16.0.0/16')
+								si.value = parts.slice(0, 3).join('.') + '.0/24';
+						}
+					}
+				} catch (e) {
+					console.error(e);
+				}
+			}
+
+			async function toggleCapture() {
+				if (!liveMode) {
+					await fetchLocalIPs();
+					const mode = document.querySelector(
+						'input[name="captureMode"]:checked',
+					).value;
+					const iface = document.getElementById('ifaceSelect').value;
+					const subnet = document.getElementById('subnetInput').value;
+
+					try {
+						const res = await fetch('/api/capture/start', {
+							method: 'POST',
+							headers: { 'Content-Type': 'application/json' },
+							body: JSON.stringify({ mode, interface: iface, subnet }),
+						});
+						const data = await res.json();
+						if (
+							data.status === 'started' ||
+							data.status === 'already_running'
+						) {
+							liveMode = true;
+							paused = false;
+							setMode('live', 'Live Capture');
+
+							document.getElementById('btnCapture').innerHTML =
+								'<i class="fa-solid fa-circle" style="color:#ef4444"></i> Recording';
+							document.getElementById('btnCapture').className =
+								'btn btn-danger';
+							document.getElementById('btnCapture').disabled = true;
+							document.getElementById('btnPause').style.display = 'flex';
+							document.getElementById('btnStopSave').style.display = 'flex';
+							document.getElementById('sectionPackets').style.display = 'block';
+
+							resetAll(false);
+							initWebSocket();
+							startStatsPoller();
+							startCycleTimer();
+						}
+					} catch (e) {
+						showStatus('Failed to start. Run as Administrator!', true);
+					}
+				}
+			}
+
+			function pauseCapture() {
+				paused = !paused;
+				const btn = document.getElementById('btnPause');
+				if (paused) {
+					btn.innerHTML = '<i class="fa-solid fa-play"></i> Resume';
+					btn.className = 'btn btn-success';
+					setMode('live', 'Paused');
+				} else {
+					btn.innerHTML = '<i class="fa-solid fa-pause"></i> Pause';
+					btn.className = 'btn btn-outline';
+					setMode('live', 'Live Capture');
+				}
+			}
+
+			async function stopSave() {
+				stopCycleTimer();
+				if (packetBuffer.length > 0) renderBufferedPackets();
+				document.getElementById('sessionTimer').textContent = '';
+
+				const stopBtn = document.getElementById('btnStopSave');
+				stopBtn.disabled = true;
+				stopBtn.innerHTML =
+					'<i class="fa-solid fa-spinner fa-spin"></i> Saving...';
+
+				try {
+					const res = await fetch('/api/capture/stop');
+					const data = await res.json();
+					liveMode = false;
+					paused = false;
+					setMode('', 'Idle');
+
+					document.getElementById('btnCapture').innerHTML =
+						'<i class="fa-solid fa-play"></i> Start';
+					document.getElementById('btnCapture').className = 'btn btn-success';
+					document.getElementById('btnCapture').disabled = false;
+					document.getElementById('btnPause').style.display = 'none';
+					stopBtn.style.display = 'none';
+					stopBtn.disabled = false;
+					stopBtn.innerHTML =
+						'<i class="fa-solid fa-floppy-disk"></i> Stop & Save';
+
+					if (data.saved) {
+						showStatus(
+							`✓ Saved ${data.packet_count} packets to ${data.pcap_file.split('/').pop()}`,
+						);
+					}
+				} catch (e) {
+					console.error(e);
+					stopBtn.disabled = false;
+					stopBtn.innerHTML =
+						'<i class="fa-solid fa-floppy-disk"></i> Stop & Save';
+				}
+			}
+
+	
+
+			function showStatus(msg, isErr = false) {
+				const el = document.getElementById('statusMsg');
+				el.textContent = msg;
+				el.className = 'status-msg ' + (isErr ? 'err' : 'ok');
+				setTimeout(() => {
+					el.className = 'status-msg';
+				}, 5000);
+			}
+
+			function resetAll(confirm_ = true) {
+				if (confirm_ && !confirm('Reset all visualizations?')) return;
+				stopCycleTimer();
+				clearMap();
+				pktCounter = 0;
+				detectedVPNs.clear();
+				document.getElementById('flowList').innerHTML =
+					'<div class="flow-empty"><i class="fa-solid fa-inbox" style="font-size:20px;opacity:0.3;display:block;margin-bottom:6px"></i>No data</div>';
+				document.getElementById('flowCount').textContent = '0';
+				document.getElementById('pktBody').innerHTML =
+					'<tr><td colspan="7" style="text-align:center;padding:12px;color:var(--text-dim)">No packets yet</td></tr>';
+				document.getElementById('pktCount').textContent = '0';
+				document.getElementById('vpnList').innerHTML =
+					'<div class="flow-empty">No VPN detected yet</div>';
+				document.getElementById('vpnBadgeTop').style.display = 'none';
+				[
+					'sTotalPkts',
+					'sUniqueIPs',
+					'sTotalBytes',
+					'sAvgPkt',
+					'sDuration',
+					'sPktRate',
+					'sUnknownLoc',
+					'sVpnCount',
+				].forEach((id) => {
+					const el = document.getElementById(id);
+					if (el) el.textContent = '-';
+				});
+				['topTalkers', 'topPorts', 'protoDist'].forEach((id) => {
+					const el = document.getElementById(id);
+					if (el) el.innerHTML = '<div class="flow-empty">No data</div>';
+				});
+				['bPkts', 'bBw', 'bIPs', 'bVpn'].forEach((id) => {
+					const el = document.getElementById(id);
+					if (el) el.textContent = '0';
+				});
+				if (!liveMode) {
+					document.getElementById('sectionPackets').style.display = 'none';
+					setMode('', 'Idle');
+				}
+			}
+
+			// ================================================================
+			// WEBSOCKET / LIVE
+			// ================================================================
+			function initWebSocket() {
+				if (socket) return;
+				socket = io.connect(window.location.origin);
+				socket.on('connect', () => console.log('WS connected'));
+				socket.on('new_packet', handlePacket);
+				socket.on('switch_new_packet', handlePacket);
+				socket.on('switch_vpn_alert', () => {});
+			socket.on('behaviour_alert', (data) => {
+				console.log('[BEHAVIOUR] Alert:', data.device_ip, 'score:', data.scores?.composite_anomaly);
+			});
+			}
+
+			function handlePacket(pkt) {
+				if (!liveMode || paused) return;
+
+				pktCounter++;
+				addPacketRow(pkt);
+
+				// VPN tracking (immediate — lightweight)
+				if (pkt.src_location?.is_vpn) addVpnEntry(pkt.src_location);
+				if (pkt.dst_location?.is_vpn) addVpnEntry(pkt.dst_location);
+
+				// Buffer packet for batch rendering
+				packetBuffer.push(pkt);
+
+				// Bottom bar
+				document.getElementById('bPkts').textContent = pktCounter;
+			}
+
+			// ── Double-buffer cycle management ──
+			let cycleIndicatorTimer = null;
+			let cycleDurationSec = 120; // driven by dropdown
+
+			function startCycleTimer() {
+				if (cycleTimer) return;
+				// Read interval from dropdown
+				const durSel = document.getElementById('durationSelect');
+				cycleDurationSec = parseInt(durSel.value) || 120;
+
+				cyclePhase = 'capturing';
+				cycleStart = Date.now();
+				cycleCount = 0;
+				packetBuffer = [];
+				bufferMarkerKeys.clear();
+
+				cycleTimer = setInterval(() => {
+					if (!liveMode) { stopCycleTimer(); return; }
+					cycleCount++;
+					renderBufferedPackets();
+					// Reset timer for next cycle — capture continues
+					cycleStart = Date.now();
+				}, cycleDurationSec * 1000);
+
+				if (cycleIndicatorTimer) clearInterval(cycleIndicatorTimer);
+				cycleIndicatorTimer = setInterval(updateCycleIndicator, 1000);
+			}
+
+			function stopCycleTimer() {
+				if (cycleTimer) { clearInterval(cycleTimer); cycleTimer = null; }
+				if (cycleIndicatorTimer) { clearInterval(cycleIndicatorTimer); cycleIndicatorTimer = null; }
+				cyclePhase = 'idle';
+				document.getElementById('sessionTimer').textContent = '';
+			}
+
+			function updateCycleIndicator() {
+				if (cyclePhase === 'idle' || !liveMode) return;
+				const elapsed = Math.floor((Date.now() - cycleStart) / 1000);
+				const remaining = Math.max(0, cycleDurationSec - elapsed);
+				const m = Math.floor(remaining / 60);
+				const s = remaining % 60;
+				const timeStr = `${m}:${s.toString().padStart(2, '0')}`;
+				// Update session timer display
+				const timerEl = document.getElementById('sessionTimer');
+				if (timerEl) timerEl.textContent = timeStr;
+				// Update mode badge
+				const modeText = document.getElementById('modeText');
+				if (modeText && liveMode && !paused) {
+					modeText.textContent = `Next refresh: ${timeStr} (${packetBuffer.length} pkts buffered)`;
+				}
+			}
+
+			function renderBufferedPackets() {
+				const packets = packetBuffer.splice(0);
+				if (packets.length === 0) return;
+
+				// Build everything into a fresh layer group
+				const newLayer = L.layerGroup();
+				const newMarkerKeys = new Set();
+
+				// Aggregate flows: group by src→dst to reduce line count
+				const flowMap = new Map();
+				packets.forEach(pkt => {
+					if (!pkt.src_location?.lat || !pkt.dst_location?.lat) return;
+					const key = `${pkt.src_location.lat.toFixed(2)},${pkt.src_location.lon.toFixed(2)}->${pkt.dst_location.lat.toFixed(2)},${pkt.dst_location.lon.toFixed(2)}`;
+					if (!flowMap.has(key)) {
+						flowMap.set(key, { pkt, count: 1 });
+					} else {
+						flowMap.get(key).count++;
+					}
+				});
+
+				// Helper to add deduped markers into newLayer
+				function addMarkerToLayer(loc, protocol, isLocal) {
+					if (!loc || !loc.lat) return;
+					const mk = `${loc.lat.toFixed(3)},${loc.lon.toFixed(3)}`;
+					if (newMarkerKeys.has(mk)) return;
+					newMarkerKeys.add(mk);
+					const isVpn = loc.is_vpn || false;
+					let c, cn, r;
+					if (isVpn) { c = COLORS.vpn; cn = 'vpn-marker'; r = 6; }
+					else if (isLocal) { c = COLORS.local; cn = 'local-marker'; r = 5; }
+					else if (protocol === 'TCP') { c = COLORS.tcp; cn = ''; r = 4; }
+					else { c = COLORS.udp; cn = ''; r = 4; }
+					const m = L.circleMarker([loc.lat, loc.lon], {
+						radius: r, fillColor: c,
+						color: isVpn ? 'rgba(239,68,68,0.3)' : isLocal ? 'rgba(56,189,248,0.3)' : 'rgba(255,255,255,0.1)',
+						weight: isVpn ? 8 : isLocal ? 7 : 5,
+						opacity: isVpn ? 0.25 : isLocal ? 0.25 : 0.1,
+						fillOpacity: 1, className: cn,
+					});
+					const lt = isLocal ? '<span style="color:#22c55e;font-weight:700">🏠 YOUR IP</span><br>' : '';
+					const vt = isVpn ? `<span style="color:#ef4444;font-weight:700">⛔ VPN — ${loc.vpn_provider || 'Detected'}</span><br>` : '';
+					m.bindPopup(`<div style="color:#000;font-size:11px;min-width:120px">${lt}${vt}<b>${loc.city || 'Unknown'}, ${loc.country || 'Unknown'}</b><br>IP: ${loc.ip}<br>${loc.isp ? 'ISP: ' + loc.isp + '<br>' : ''}${loc.asn ? 'ASN: ' + loc.asn : ''}</div>`);
+					newLayer.addLayer(m);
+				}
+
+				// Render aggregated flows (max 200 lines)
+				let lineCount = 0;
+				flowMap.forEach(({ pkt, count }) => {
+					if (lineCount >= 200) return;
+					lineCount++;
+					const isVpn = pkt.vpn_detected || pkt.src_location?.is_vpn || pkt.dst_location?.is_vpn;
+					let color, dashArray;
+					if (isVpn) { color = COLORS.vpn; dashArray = '4, 6'; }
+					else if (pkt.protocol === 'TCP') { color = COLORS.tcp; dashArray = '6, 8'; }
+					else { color = COLORS.udp; dashArray = '6, 8'; }
+					const line = L.polyline(
+						[[pkt.src_location.lat, pkt.src_location.lon], [pkt.dst_location.lat, pkt.dst_location.lon]],
+						{ color, weight: isVpn ? 2.5 : Math.min(1 + count * 0.3, 3), opacity: isVpn ? 0.8 : 0.5, dashArray }
+					);
+					newLayer.addLayer(line);
+					addMarkerToLayer(pkt.src_location, pkt.protocol, localIPs.includes(pkt.src_location?.ip));
+					addMarkerToLayer(pkt.dst_location, pkt.protocol, localIPs.includes(pkt.dst_location?.ip));
+				});
+
+				// Single animation timer for this batch
+				let offset = 0;
+				const batchAnim = setInterval(() => {
+					if (!liveMode) { clearInterval(batchAnim); return; }
+					offset = (offset + 0.5) % 20;
+					newLayer.eachLayer(l => { if (l.setStyle) l.setStyle({ dashOffset: offset.toString() }); });
+				}, 80);
+
+				// Swap: remove old, show new
+				map.removeLayer(displayLayerGroup);
+				displayLayerGroup = newLayer;
+				displayLayerGroup.addTo(map);
+
+				cycleStart = Date.now();
+				console.log(`[CYCLE] Rendered ${flowMap.size} flows from ${packets.length} packets (cycle #${cycleCount})`);
+			}
+
+			function addMarker(loc, protocol, isLocal) {
+				if (!loc || !loc.lat) return;
+				const key = `${loc.lat.toFixed(3)},${loc.lon.toFixed(3)}`;
+				if (liveMarkers[key]) return;
+
+				const isVpn = loc.is_vpn || false;
+				let color, className, radius;
+				if (isVpn) {
+					color = COLORS.vpn;
+					className = 'vpn-marker';
+					radius = 6;
+				} else if (isLocal) {
+					color = COLORS.local;
+					className = 'local-marker';
+					radius = 5;
+				} else if (protocol === 'TCP') {
+					color = COLORS.tcp;
+					className = '';
+					radius = 4;
+				} else {
+					color = COLORS.udp;
+					className = '';
+					radius = 4;
+				}
+
+				const m = L.circleMarker([loc.lat, loc.lon], {
+					radius,
+					fillColor: color,
+					color: isVpn
+						? 'rgba(239,68,68,0.3)'
+						: isLocal
+							? 'rgba(56,189,248,0.3)'
+							: 'rgba(255,255,255,0.1)',
+					weight: isVpn ? 8 : isLocal ? 7 : 5,
+					opacity: isVpn ? 0.25 : isLocal ? 0.25 : 0.1,
+					fillOpacity: 1,
+					className,
+				}).addTo(map);
+
+				const localTag = isLocal
+					? '<span style="color:#22c55e;font-weight:700">🏠 YOUR IP</span><br>'
+					: '';
+				const vpnTag = isVpn
+					? `<span style="color:#ef4444;font-weight:700">⛔ VPN — ${loc.vpn_provider || 'Detected'}</span><br>`
+					: '';
+				m.bindPopup(
+					`<div style="color:#000;font-size:11px;min-width:120px">${localTag}${vpnTag}<b>${loc.city || 'Unknown'}, ${loc.country || 'Unknown'}</b><br>IP: ${loc.ip}<br>${loc.isp ? 'ISP: ' + loc.isp + '<br>' : ''}${loc.asn ? 'ASN: ' + loc.asn : ''}</div>`,
+				);
+				liveMarkers[key] = m;
+			}
+
+			let vpnExplanations = {};
+
+			function addPacketRow(pkt) {
+				const tbody = document.getElementById('pktBody');
+				if (pktCounter === 1) tbody.innerHTML = '';
+				const isVpn =
+					pkt.vpn_detected ||
+					pkt.src_location?.is_vpn ||
+					pkt.dst_location?.is_vpn;
+				const isThreat = pkt.threat_info?.is_malicious;
+				const riskScore = pkt.risk_score || 0;
+				const protoClass = pkt.protocol === 'TCP' ? 'proto-tcp' : 'proto-udp';
+				const row = document.createElement('tr');
+				if (isVpn) row.className = 'vpn-row';
+				else if (isThreat) row.className = 'threat-row';
+				const t = new Date(pkt.timestamp * 1000);
+
+				let riskClass = 'risk-none';
+				if (riskScore >= 60) riskClass = 'risk-critical';
+				else if (riskScore >= 40) riskClass = 'risk-high';
+				else if (riskScore >= 20) riskClass = 'risk-medium';
+				else if (riskScore > 0) riskClass = 'risk-low';
+
+				row.innerHTML = `<td>${pktCounter}</td><td>${t.toLocaleTimeString()}</td><td>${pkt.src_ip}</td><td>${pkt.dst_ip}</td><td class="${protoClass}">${pkt.protocol}</td><td>${pkt.size}</td><td><span class="risk-badge ${riskClass}">${riskScore}</span></td>`;
+
+				// Store VPN explanation for click access
+				if (pkt.vpn_explanation) {
+					const vpnIp = pkt.vpn_explanation.ip;
+					vpnExplanations[vpnIp] = pkt.vpn_explanation;
+				}
+
+				// Click to show detail if VPN or threat
+				if (isVpn && pkt.vpn_explanation) {
+					row.style.cursor = 'pointer';
+					row.title = 'Click for VPN detection details';
+					row.onclick = () => showVpnDetail(pkt.vpn_explanation, pkt);
+				}
+
+				tbody.prepend(row);
+				if (tbody.children.length > 200) tbody.removeChild(tbody.lastChild);
+				document.getElementById('pktCount').textContent = pktCounter;
+			}
+
+			function addVpnEntry(loc) {
+				if (!loc || !loc.ip || detectedVPNs.has(loc.ip)) return;
+				detectedVPNs.add(loc.ip);
+
+				const container = document.getElementById('vpnList');
+				if (detectedVPNs.size === 1) container.innerHTML = '';
+
+				const method = loc.vpn_method || vpnExplanations[loc.ip]?.method || 'unknown';
+				const methodDetail = loc.vpn_method_detail || vpnExplanations[loc.ip]?.method_detail || '';
+				const methodLabel = methodDetail || vpnExplanations[loc.ip]?.method_label || method;
+
+				const el = document.createElement('div');
+				el.className = 'vpn-alert-item';
+				el.style.cursor = 'pointer';
+				el.title = 'Click for detection details';
+				el.innerHTML = `<div class="provider">${loc.vpn_provider || 'VPN Detected'}</div>
+            <div class="ip">${loc.ip}</div>
+            <div class="meta">${loc.city || 'Unknown'}, ${loc.country || 'Unknown'} · ${loc.isp || ''}</div>
+            <div class="meta" style="color:var(--vpn-color);margin-top:4px"><i class="fa-solid fa-bullseye"></i> ${methodLabel}</div>`;
+
+				el.onclick = () => {
+					const explanation = vpnExplanations[loc.ip] || {
+						ip: loc.ip,
+						provider: loc.vpn_provider || 'Unknown',
+						method: method,
+						method_label: methodLabel,
+						method_detail: methodDetail,
+						isp: loc.isp || 'Unknown',
+						asn: loc.asn || 'Unknown',
+						country: loc.country || 'Unknown',
+						city: loc.city || 'Unknown',
+						protocol_hints: [],
+					};
+					showVpnDetail(explanation);
+				};
+
+				container.prepend(el);
+
+				const badge = document.getElementById('vpnBadgeTop');
+				badge.textContent = detectedVPNs.size;
+				badge.style.display = 'inline';
+				document.getElementById('bVpn').textContent = detectedVPNs.size;
+			}
+
+			function showVpnDetail(explanation, pkt) {
+				const content = document.getElementById('vpnDetailContent');
+				const hints = (explanation.protocol_hints || [])
+					.map(h => `<div class="data-row"><span>Port ${h.port}</span><span class="val">${h.protocol_hint}</span></div>`)
+					.join('');
+
+				const riskHtml = pkt && pkt.risk_score !== undefined
+					? `<div class="vpn-detail-row"><span class="label">Risk Score</span><span class="value"><span class="risk-badge ${getRiskClass(pkt.risk_score)}">${pkt.risk_score}</span></span></div>
+					   <div class="vpn-detail-row"><span class="label">Risk Reasons</span><span class="value">${(pkt.risk_reasons||[]).join(', ') || 'None'}</span></div>` : '';
+
+				const threatHtml = pkt && pkt.threat_info
+					? `<div class="vpn-detail-section" style="border-left-color:var(--switch-color);background:rgba(245,158,11,0.05)">
+						<h4><i class="fa-solid fa-triangle-exclamation"></i> Threat Intelligence</h4>
+						<p>Level: ${pkt.threat_info.threat_level}<br>Sources: ${(pkt.threat_info.sources||[]).join(', ')}</p>
+					   </div>` : '';
+
+				content.innerHTML = `
+					<h3><i class="fa-solid fa-shield-halved"></i> VPN Detection Detail</h3>
+					<div class="vpn-detail-row"><span class="label">IP Address</span><span class="value" style="color:var(--success)">${explanation.ip}</span></div>
+					<div class="vpn-detail-row"><span class="label">Provider</span><span class="value" style="color:var(--vpn-color)">${explanation.provider}</span></div>
+					<div class="vpn-detail-row"><span class="label">ISP</span><span class="value">${explanation.isp || 'Unknown'}</span></div>
+					<div class="vpn-detail-row"><span class="label">ASN</span><span class="value">${explanation.asn || 'Unknown'}</span></div>
+					<div class="vpn-detail-row"><span class="label">Location</span><span class="value">${explanation.city || '?'}, ${explanation.country || '?'}</span></div>
+					${riskHtml}
+					<div class="vpn-detail-section">
+						<h4><i class="fa-solid fa-microscope"></i> Detection Method</h4>
+						<p><strong style="text-transform:capitalize">${explanation.method}</strong></p>
+						${explanation.method_detail
+							? `<p style="color:var(--vpn-color);font-size:12px;margin-top:4px;padding:6px 8px;background:rgba(239,68,68,0.08);border-radius:6px;border-left:3px solid var(--vpn-color)"><i class="fa-solid fa-bullseye" style="margin-right:4px"></i>${explanation.method_detail}</p>`
+							: (explanation.method_label ? `<p style="color:var(--text-dim);font-size:12px;margin-top:4px">${explanation.method_label}</p>` : '')}
+					</div>
+					${hints ? `<div class="vpn-detail-section"><h4><i class="fa-solid fa-network-wired"></i> Protocol Signatures</h4><div class="data-list" style="max-height:none;margin:0">${hints}</div></div>` : ''}
+					${threatHtml}
+					<button class="vpn-detail-close" onclick="closeVpnDetail()">Close</button>
+				`;
+				document.getElementById('vpnDetailModal').classList.add('open');
+			}
+
+			function closeVpnDetail() {
+				document.getElementById('vpnDetailModal').classList.remove('open');
+			}
+
+			function getRiskClass(score) {
+				if (score >= 60) return 'risk-critical';
+				if (score >= 40) return 'risk-high';
+				if (score >= 20) return 'risk-medium';
+				if (score > 0) return 'risk-low';
+				return 'risk-none';
+			}
+
+			// ================================================================
+			// STATS POLLING
+			// ================================================================
+			let statsPoller = null;
+			function startStatsPoller() {
+				if (statsPoller) return;
+				statsPoller = setInterval(updateStats, 3000);
+				updateStats();
+			}
+
+			async function updateStats() {
+				if (!liveMode) {
+					if (statsPoller) {
+						clearInterval(statsPoller);
+						statsPoller = null;
+					}
+					return;
+				}
+				try {
+					const res = await fetch('/api/live/stats');
+					const d = await res.json();
+
+					setEl('sTotalPkts', d.total_packets);
+					setEl('sUniqueIPs', d.unique_ips);
+					setEl('sTotalBytes', fmtBytes(d.total_bytes));
+					setEl(
+						'sAvgPkt',
+						Math.round(d.total_bytes / Math.max(d.total_packets, 1)) + ' B',
+					);
+					setEl('sDuration', fmtDuration(d.uptime));
+					setEl(
+						'sPktRate',
+						(d.total_packets / Math.max(d.uptime, 1)).toFixed(1),
+					);
+					setEl('sVpnCount', d.vpn_ips_count || 0);
+
+					// Bottom bar
+					setEl('bPkts', d.total_packets);
+					setEl('bBw', fmtBytes(d.bandwidth_bps) + '/s');
+					setEl('bIPs', d.unique_ips);
+
+					// Top talkers
+					if (d.top_talkers && d.top_talkers.length > 0) {
+						document.getElementById('topTalkers').innerHTML = d.top_talkers
+							.map(
+								(t, i) =>
+									`<div class="data-row"><span>${i + 1}. ${t.ip}</span><span class="val">${fmtBytes(t.bytes)}</span></div>`,
+							)
+							.join('');
+					}
+					if (d.top_ports && d.top_ports.length > 0) {
+						document.getElementById('topPorts').innerHTML = d.top_ports
+							.map(
+								(p, i) =>
+									`<div class="data-row"><span>${i + 1}. Port ${p.port}</span><span class="val">${p.count} pkts</span></div>`,
+							)
+							.join('');
+					}
+					if (d.protocols) {
+						const entries = Object.entries(d.protocols);
+						const total = entries.reduce((s, e) => s + e[1], 0);
+						if (entries.length > 0) {
+							document.getElementById('protoDist').innerHTML = entries
+								.map(([name, count]) => {
+									const pct = ((count / total) * 100).toFixed(1);
+									const color =
+										name === 'TCP'
+											? COLORS.tcp
+											: name === 'UDP'
+												? COLORS.udp
+												: '#94a3b8';
+									return `<div class="data-row"><span style="color:${color}">${name}</span><span class="val">${count} (${pct}%)</span></div>`;
+								})
+								.join('');
+						}
+					}
+				} catch (e) {
+					console.error('stats error', e);
+				}
+			}
+
+			// ================================================================
+			// PCAP ANALYSIS
+			// ================================================================
+			async function uploadPcap(input) {
+				if (!input.files.length) return;
+				const file = input.files[0];
+				showStatus('Uploading ' + file.name + '…');
+
+				const fd = new FormData();
+				fd.append('file', file);
+				try {
+					const res = await fetch('/api/upload_pcap', {
+						method: 'POST',
+						body: fd,
+					});
+					const data = await res.json();
+					if (data.status === 'success') {
+						stopCycleTimer();
+						// explicitly stop any background live capture so next start is fresh
+						try { await fetch('/api/capture/stop'); } catch (e) {}
+						resetAll(false);
+						pcapMode = true;
+						liveMode = false;
+						setMode('pcap', 'PCAP Analysis');
+						showStatus(`✓ Loaded ${data.packet_count} packets`);
+						loadFlows();
+						loadPcapStats();
+					} else {
+						showStatus(data.error || 'Upload failed', true);
+					}
+				} catch (e) {
+					showStatus('Upload error: ' + e.message, true);
+				}
+				input.value = '';
+			}
+
+			async function loadFlows() {
+				const proto = document.getElementById('protocolFilter').value;
+				const limit = document.getElementById('limitInput').value;
+				const minPkts = document.getElementById('minPackets').value;
+				let url = `/api/flows?limit=${limit}&min_packets=${minPkts}`;
+				if (proto) url += `&protocol=${proto}`;
+
+				try {
+					const res = await fetch(url);
+					const data = await res.json();
+					if (data.error) {
+						showStatus(data.error, true);
+						return;
+					}
+
+					clearMap();
+					const flowListEl = document.getElementById('flowList');
+
+					if (!data.flows || data.flows.length === 0) {
+						flowListEl.innerHTML =
+							'<div class="flow-empty">No flows found</div>';
+						document.getElementById('flowCount').textContent = '0';
+						return;
+					}
+
+					flowListEl.innerHTML = '';
+					document.getElementById('flowCount').textContent = data.total;
+
+					data.flows.forEach((flow, idx) => {
+						const s = flow.src,
+							d = flow.dst;
+						const isVpn = s.is_vpn || d.is_vpn;
+						const color = isVpn ? COLORS.vpn : COLORS.tcp;
+
+						// Map elements
+						const line = L.polyline(
+							[
+								[s.lat, s.lon],
+								[d.lat, d.lon],
+							],
+							{
+								color,
+								weight: isVpn ? 2.5 : 1.5,
+								opacity: isVpn ? 0.8 : 0.5,
+								dashArray: isVpn ? '4, 6' : null,
+							},
+						).addTo(map);
+						flowLines.push(line);
+
+						[s, d].forEach((loc) => {
+							const isV = loc.is_vpn || false;
+							const c = isV ? COLORS.vpn : color;
+							const m = L.circleMarker([loc.lat, loc.lon], {
+								radius: isV ? 6 : 4,
+								fillColor: c,
+								color: isV ? 'rgba(239,68,68,0.3)' : 'rgba(255,255,255,0.1)',
+								weight: isV ? 8 : 4,
+								opacity: isV ? 0.25 : 0.1,
+								fillOpacity: 0.9,
+								className: isV ? 'vpn-marker' : '',
+							}).addTo(map);
+							const vpnTag = isV ? `<span style="color:#ef4444;font-weight:700">⛔ VPN — ${loc.vpn_provider || 'Detected'}</span><br>` : '';
+							m.bindPopup(
+								`<div style="color:#000;font-size:11px;min-width:120px">${vpnTag}<b>${loc.city}, ${loc.country}</b><br>IP: ${loc.ip}<br>${loc.isp ? 'ISP: ' + loc.isp + '<br>' : ''}${loc.asn ? 'ASN: ' + loc.asn : ''}</div>`,
+							);
+							markers.push(m);
+						});
+
+						// Sidebar list
+						const item = document.createElement('div');
+						item.className = 'flow-item';
+						if (isVpn) item.style.borderLeft = '3px solid var(--vpn-color)';
+						item.innerHTML = `<div class="flow-ips"><span class="src">${s.ip}${s.is_vpn ? ' 🔒' : ''}</span><span class="dst">→ ${d.ip}${d.is_vpn ? ' 🔒' : ''}</span></div>
+                    <div class="flow-stats">${flow.stats.packet_count} pkts<br>${fmtBytes(flow.stats.total_bytes)}</div>`;
+						item.onclick = () => {
+							map.fitBounds(
+								[
+									[s.lat, s.lon],
+									[d.lat, d.lon],
+								],
+								{ padding: [60, 60] },
+							);
+						};
+						flowListEl.appendChild(item);
+
+						// VPN tracking
+						if (s.is_vpn) addVpnEntry(s);
+						if (d.is_vpn) addVpnEntry(d);
+					});
+				} catch (e) {
+					showStatus('Error loading flows: ' + e.message, true);
+				}
+			}
+
+			async function loadPcapStats() {
+				try {
+					const res = await fetch('/api/stats');
+					const d = await res.json();
+					if (d.error) return;
+
+					setEl('sTotalPkts', d.total_packets);
+					setEl('sUniqueIPs', d.unique_src_ips + d.unique_dst_ips);
+					setEl('sTotalBytes', fmtBytes(d.total_bytes));
+					setEl('sAvgPkt', Math.round(d.avg_packet_size) + ' B');
+					setEl('sDuration', fmtDuration(d.duration));
+					setEl('sPktRate', d.packet_rate.toFixed(1));
+					setEl('sUnknownLoc', d.unknown_locations || 0);
+					setEl('sVpnCount', d.vpn_ips_count || 0);
+
+					// Bottom bar
+					setEl('bPkts', d.total_packets);
+					setEl('bBw', fmtBytes(d.total_bytes / Math.max(d.duration, 1)) + '/s');
+					setEl('bIPs', d.unique_src_ips + d.unique_dst_ips);
+					setEl('bVpn', d.vpn_ips_count || 0);
+
+					if (d.top_talkers) {
+						document.getElementById('topTalkers').innerHTML = d.top_talkers
+							.map(
+								(t, i) =>
+									`<div class="data-row"><span>${i + 1}. ${t.ip}</span><span class="val">${fmtBytes(t.bytes)}</span></div>`,
+							)
+							.join('');
+					}
+					if (d.top_dst_ports) {
+						document.getElementById('topPorts').innerHTML = d.top_dst_ports
+							.map(
+								(p, i) =>
+									`<div class="data-row"><span>${i + 1}. Port ${p.port}</span><span class="val">${p.count} pkts</span></div>`,
+							)
+							.join('');
+					}
+					if (d.protocols) {
+						const total = d.protocols.reduce((s, p) => s + p.count, 0);
+						document.getElementById('protoDist').innerHTML = d.protocols
+							.map((p) => {
+								const pct = ((p.count / total) * 100).toFixed(1);
+								const color =
+									p.name === 'TCP'
+										? COLORS.tcp
+										: p.name === 'UDP'
+											? COLORS.udp
+											: '#94a3b8';
+								return `<div class="data-row"><span style="color:${color}">${p.name}</span><span class="val">${p.count} (${pct}%)</span></div>`;
+							})
+							.join('');
+					}
+					if (d.vpn_details) {
+						d.vpn_details.forEach((v) => addVpnEntry(v));
+					}
+				} catch (e) {
+					console.error('pcap stats error', e);
+				}
+			}
+
+			function applyFilters() {
+				if (pcapMode) loadFlows();
+				else if (liveMode) showStatus('Filters apply on next refresh');
+				else showStatus('Load data first', true);
+			}
+
+			// ================================================================
+			// MAP HELPERS
+			// ================================================================
+			function clearMap() {
+				flowLines.forEach((l) => map.removeLayer(l));
+				flowLines = [];
+				markers.forEach((m) => map.removeLayer(m));
+				markers = [];
+				livePaths.forEach((l) => map.removeLayer(l));
+				livePaths = [];
+				Object.values(liveMarkers).forEach((m) => map.removeLayer(m));
+				liveMarkers = {};
+				// Clear double-buffer layer groups
+				map.removeLayer(displayLayerGroup);
+				displayLayerGroup = L.layerGroup().addTo(map);
+				packetBuffer = [];
+				bufferMarkerKeys.clear();
+			}
+
+			// ================================================================
+			// UTILS
+			// ================================================================
+			function setEl(id, val) {
+				const el = document.getElementById(id);
+				if (el) el.textContent = val;
+			}
+
+			function fmtBytes(b) {
+				if (b >= 1073741824) return (b / 1073741824).toFixed(2) + ' GB';
+				if (b >= 1048576) return (b / 1048576).toFixed(2) + ' MB';
+				if (b >= 1024) return (b / 1024).toFixed(1) + ' KB';
+				return Math.round(b) + ' B';
+			}
+
+			function fmtDuration(s) {
+				if (s < 60) return Math.round(s) + 's';
+				if (s < 3600)
+					return Math.floor(s / 60) + 'm ' + Math.round(s % 60) + 's';
+				return Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm';
+			}
+
+			// ================================================================
+			// AGENT CHAT
+			// ================================================================
+			let agentOpen = false;
+			let agentHistory = [];
+			let agentBusy = false;
+			let agentInjectLines = [];
+
+			function toggleAgentPanel() {
+				agentOpen = !agentOpen;
+				const panel = document.getElementById('agentPanel');
+				const btn = document.getElementById('btnAgent');
+				if (agentOpen) {
+					panel.classList.add('open');
+					btn.classList.add('active');
+					document.getElementById('agentInput').focus();
+					if (agentHistory.length === 0) agentCheckStatus();
+				} else {
+					panel.classList.remove('open');
+					btn.classList.remove('active');
+				}
+			}
+
+			async function agentCheckStatus() {
+				try {
+					const res = await fetch('/api/agent/status');
+					const d = await res.json();
+					const statusEl = document.getElementById('agentStatusLine');
+					const badgeEl = document.getElementById('agentModelBadge');
+					const toolCount = d.tool_count || 12;
+					const steps = d.max_steps || 3;
+					if (d.available) {
+						statusEl.textContent = `AI powered · ${toolCount} tools · ${steps}-step ReAct`;
+						statusEl.style.color = 'var(--success)';
+						badgeEl.textContent = d.model || 'gemma-4-31b:free';
+					} else {
+						statusEl.textContent = `Regex fallback · ${toolCount} tools · offline`;
+						statusEl.style.color = 'var(--switch-color)';
+						badgeEl.textContent = 'regex-fallback';
+						badgeEl.style.background = 'rgba(245,158,11,0.15)';
+						badgeEl.style.color = 'var(--switch-color)';
+					}
+				} catch(e) {
+					document.getElementById('agentStatusLine').textContent = 'Agent unavailable';
+				}
+			}
+
+			function toggleInjectForm() {
+				const form = document.getElementById('agentInjectForm');
+				form.classList.toggle('visible');
+				if (form.classList.contains('visible')) {
+					document.getElementById('injectSrc').focus();
+				}
+			}
+
+			function agentHandleKey(e) {
+				if (e.key === 'Enter' && !e.shiftKey) {
+					e.preventDefault();
+					agentSend();
+				}
+			}
+
+			function agentSendChip(text) {
+				document.getElementById('agentInput').value = text;
+				agentSend();
+			}
+
+			async function agentInjectPacket() {
+				const src = document.getElementById('injectSrc').value.trim();
+				const dst = document.getElementById('injectDst').value.trim();
+				const proto = document.getElementById('injectProto').value;
+				if (!src || !dst) {
+					agentAppendBubble('assistant', '⚠️ Please enter both source and destination IPs.', null);
+					return;
+				}
+				const msg = `Inject packet from ${src} to ${dst} using ${proto}`;
+				document.getElementById('agentInput').value = msg;
+				document.getElementById('agentInjectForm').classList.remove('visible');
+				agentSend();
+			}
+
+			async function agentSend() {
+				const input = document.getElementById('agentInput');
+				const message = input.value.trim();
+				if (!message || agentBusy) return;
+
+				agentBusy = true;
+				input.value = '';
+				input.style.height = 'auto';
+				document.getElementById('agentSendBtn').disabled = true;
+
+				// Add user bubble
+				agentAppendBubble('user', message, null);
+				agentHistory.push({ role: 'user', content: message });
+
+				// Show typing indicator
+				const typingEl = agentShowTyping();
+
+				try {
+					const res = await fetch('/api/agent/chat', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ message, history: agentHistory.slice(-6) }),
+					});
+					const data = await res.json();
+
+					agentHideTyping(typingEl);
+
+					if (data.error) {
+						agentAppendBubble('assistant', `⚠️ ${data.error}`, null);
+					} else {
+						// Show tool chain badge (multi-step) if agent used multiple tools
+						const chain = data.tools_chain || [data.tool_used];
+						const toolLabel = chain.length > 1
+							? chain.join(' → ')
+							: data.tool_used;
+						agentAppendBubble('assistant', data.reply, toolLabel);
+						agentHistory.push({ role: 'assistant', content: data.reply });
+
+						// Handle map action
+						if (data.map_action && data.map_action.type === 'inject_packet') {
+							agentPlotOnMap(data.map_action);
+						}
+					}
+				} catch (e) {
+					agentHideTyping(typingEl);
+					agentAppendBubble('assistant', '⚠️ Network error — is the server running?', null);
+				} finally {
+					agentBusy = false;
+					document.getElementById('agentSendBtn').disabled = false;
+					input.focus();
+				}
+			}
+
+			function agentAppendBubble(role, text, toolUsed) {
+				const msgs = document.getElementById('agentMessages');
+				const bubble = document.createElement('div');
+				bubble.className = `agent-bubble ${role}`;
+
+				let content = '';
+				if (role === 'assistant' && toolUsed && toolUsed !== 'general_answer') {
+					const toolIcons = {
+						get_stats: '📊', get_vpn: '🔒', get_top_talkers: '🌐',
+						check_ip: '🔍', get_flows: '🔄', inject_packet: '📍',
+						explain_packet: '📖', analyze_traffic: '📊',
+						get_threat_summary: '🛡️', get_vpn_signals: '🔎',
+						scan_anomalies: '🔍', get_bandwidth_analysis: '📡'
+					};
+					// Multi-step: toolUsed may be 'tool1 → tool2 → tool3'
+					const firstTool = toolUsed.split(' → ')[0].trim();
+					const icon = toolIcons[firstTool] || '🤖';
+					const label = toolUsed.replace(/_/g,' ');
+					content += `<div class="tool-badge">${icon} ${label}</div>`;
+				}
+				content += agentFormatMarkdown(text);
+				bubble.innerHTML = content;
+				msgs.appendChild(bubble);
+				msgs.scrollTop = msgs.scrollHeight;
+			}
+
+			function agentFormatMarkdown(text) {
+				// Markdown: **bold**, `code`, bullet lists, HR dividers, newlines
+				return text
+					.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+					.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+					.replace(/`([^`]+)`/g, '<code>$1</code>')
+					.replace(/^---$/gm, '<hr style="border-color:rgba(255,255,255,0.1);margin:8px 0">')
+					.replace(/^### (.+)$/gm, '<strong style="font-size:12px;color:var(--accent)">$1</strong>')
+					.replace(/^## (.+)$/gm, '<strong style="font-size:13px">$1</strong>')
+					.replace(/^# (.+)$/gm, '<strong style="font-size:14px">$1</strong>')
+					.replace(/^- (.+)/gm, '• $1')
+					.replace(/^(\d+)\. (.+)/gm, '$1. $2')
+					.replace(/\n/g, '<br>');
+			}
+
+			function agentShowTyping() {
+				const msgs = document.getElementById('agentMessages');
+				const el = document.createElement('div');
+				el.className = 'agent-typing';
+				el.innerHTML = '<div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div>';
+				msgs.appendChild(el);
+				msgs.scrollTop = msgs.scrollHeight;
+				return el;
+			}
+
+			function agentHideTyping(el) {
+				if (el && el.parentNode) el.parentNode.removeChild(el);
+			}
+
+			function agentPlotOnMap(action) {
+				const src = action.src, dst = action.dst;
+				if (!src.lat || !dst.lat) return;
+
+				// Clear previous injected lines
+				agentInjectLines.forEach(l => map.removeLayer(l));
+				agentInjectLines = [];
+
+				const isVpn = src.is_vpn || dst.is_vpn;
+				const color = isVpn ? '#ef4444' : action.protocol === 'UDP' ? '#8b5cf6' : '#6366f1';
+
+				// Line
+				const line = L.polyline(
+					[[src.lat, src.lon], [dst.lat, dst.lon]],
+					{ color, weight: 2.5, opacity: 0.9, dashArray: '6 4', className: 'injected-line' }
+				).addTo(map);
+				agentInjectLines.push(line);
+
+				// Markers
+				[src, dst].forEach(loc => {
+					const c = loc.is_vpn ? '#ef4444' : color;
+					const m = L.circleMarker([loc.lat, loc.lon], {
+						radius: 7,
+						fillColor: c,
+						color: 'rgba(255,255,255,0.3)',
+						weight: 6,
+						opacity: 0.3,
+						fillOpacity: 0.95,
+						className: loc.is_vpn ? 'vpn-marker' : 'local-marker',
+					}).addTo(map);
+					const vpnTag = loc.is_vpn ? `<span style="color:#ef4444;font-weight:700">⛔ VPN</span><br>` : '🤖 Injected<br>';
+					m.bindPopup(`<div style="color:#000;font-size:11px;min-width:100px">${vpnTag}<b>${loc.ip}</b><br>${loc.city}, ${loc.country}<br>${loc.isp || ''}</div>`);
+					agentInjectLines.push(m);
+				});
+
+				// Fly to the path
+				map.fitBounds([[src.lat, src.lon], [dst.lat, dst.lon]], { padding: [80, 80] });
+
+				// Open popups briefly
+				setTimeout(() => agentInjectLines.forEach(l => { if (l.openPopup) l.openPopup(); }), 600);
+			}
+
+			// ================================================================
+			// INIT
+			// ================================================================
+			document.addEventListener('DOMContentLoaded', async () => {
+				loadInterfaces();
+				try {
+					const res = await fetch('/api/mode');
+					const data = await res.json();
+					if (data.live_capture) {
+						liveMode = true;
+						setMode('live', 'Live Capture');
+						document.getElementById('sectionPackets').style.display = 'block';
+						initWebSocket();
+						startStatsPoller();
+					} else if (data.has_parquet) {
+						pcapMode = true;
+						setMode('pcap', 'PCAP Analysis');
+						loadFlows();
+						loadPcapStats();
+					}
+				} catch (e) {
+					console.error(e);
+				}
+			});
+		</script>
+	</body>
+</html>
