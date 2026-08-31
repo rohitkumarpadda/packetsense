@@ -444,8 +444,8 @@ def detect_vpn(ip: str, isp: str, asn: str, asn_data: dict = None) -> dict:
                     "detail": detail,
                 })
 
-    # ── Signal 5: AbuseIPDB enrichment ───────────────────────
-    if not ip.startswith(("10.", "172.", "192.168.", "127.")):
+    # ── Signal 5: AbuseIPDB enrichment (skipped in FAST_MODE) ──
+    if not config.FAST_MODE and not ip.startswith(("10.", "172.", "192.168.", "127.")):
         try:
             from services.abuseipdb import check_ip_abuseipdb
             abuse_result = check_ip_abuseipdb(ip)
@@ -481,8 +481,8 @@ def detect_vpn(ip: str, isp: str, asn: str, asn_data: dict = None) -> dict:
         except ImportError:
             pass
 
-    # ── Signal 6: Offline threat intelligence correlation ────
-    if not ip.startswith(("10.", "172.", "192.168.", "127.")):
+    # ── Signal 6: Offline threat intelligence correlation (skipped in FAST_MODE) ──
+    if not config.FAST_MODE and not ip.startswith(("10.", "172.", "192.168.", "127.")):
         try:
             from services.threat_intel import check_ip_reputation
             rep = check_ip_reputation(ip)
@@ -498,19 +498,22 @@ def detect_vpn(ip: str, isp: str, asn: str, asn_data: dict = None) -> dict:
         except ImportError:
             pass
 
-    # ── Signal 7: External API enrichment ────────────────────
-    # ── Signal 7: External established API enrichment (elevated weights) ───
+    # ── Signal 7: External API enrichment ────────────────────────────
+    # All three APIs run in both FAST_MODE and full mode — each has a 24h
+    # per-IP cache so only the very first packet to a new IP makes HTTP calls.
+    # FAST_MODE skips the heavy offline DBs above but keeps all online APIs
+    # for robust VPN detection.
     if not ip.startswith(("10.", "172.", "192.168.", "127.")):
         try:
             from services.vpn_api import query_all_vpn_apis
             api_result = query_all_vpn_apis(ip)
 
             if api_result.get("available"):
-                api_positive_votes = 0  # Count how many APIs flag this IP as VPN/proxy/Tor
+                api_positive_votes = 0
 
                 for sig in api_result.get("signals", []):
                     source = sig.get("source", "")
-                    sig_flagged = False  # did this API fire a positive VPN signal?
+                    sig_flagged = False
 
                     if "vpnapi.io" in source:
                         if sig.get("is_tor"):
@@ -526,7 +529,6 @@ def detect_vpn(ip: str, isp: str, asn: str, asn_data: dict = None) -> dict:
                             })
                             sig_flagged = True
                         elif sig.get("is_vpn") or sig.get("is_proxy") or sig.get("is_relay"):
-                            # Use proxy-specific weight when only proxy flag (not full VPN)
                             weight = (
                                 CONFIDENCE_WEIGHTS["vpnapi_proxy_flag"]
                                 if sig.get("is_proxy") and not sig.get("is_vpn")
@@ -598,8 +600,7 @@ def detect_vpn(ip: str, isp: str, asn: str, asn_data: dict = None) -> dict:
                     if sig_flagged:
                         api_positive_votes += 1
 
-                # ── API consensus bonus — independent corroboration ───────────────
-                # When 2+ independent established APIs agree, this is very strong evidence.
+                # ── API consensus bonus ───────────────────────────────
                 if api_positive_votes >= 3:
                     weight = CONFIDENCE_WEIGHTS["api_consensus_3"]
                     confidence += weight
@@ -618,7 +619,7 @@ def detect_vpn(ip: str, isp: str, asn: str, asn_data: dict = None) -> dict:
                     signals.append({
                         "type": "api_consensus_2",
                         "weight": weight,
-                        "detail": f"2 out of 3 established APIs independently confirm VPN/proxy (strong evidence)",
+                        "detail": "2 out of 3 established APIs independently confirm VPN/proxy (strong evidence)",
                         "api": "consensus",
                     })
 
@@ -632,6 +633,8 @@ def detect_vpn(ip: str, isp: str, asn: str, asn_data: dict = None) -> dict:
 
         except ImportError:
             pass
+
+
 
     # ── Build final result ───────────────────────────────────
     confidence = min(confidence, 100)

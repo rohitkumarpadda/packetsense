@@ -433,38 +433,41 @@ def packet_callback(packet):
         vpn_confidence = dst_loc.get("vpn_confidence", 0) if dst_loc else 0
         vpn_classification = dst_loc.get("vpn_classification", "not_vpn") if dst_loc else "not_vpn"
 
-    # Threat intelligence check
+    # Threat intelligence check (skipped in FAST_MODE)
     threat_info = None
-    for ip in (src_ip, dst_ip):
-        if not is_private_ip(ip):
-            threat_info = check_ip_reputation(ip)
-            if threat_info and threat_info.get("is_malicious"):
-                break
-
-    # AbuseIPDB enrichment (optional online, always tries offline blacklist)
-    abuseipdb_info = None
-    try:
-        from services.abuseipdb import check_ip_abuseipdb
-        for ip in (dst_ip, src_ip):
+    if not config.FAST_MODE:
+        for ip in (src_ip, dst_ip):
             if not is_private_ip(ip):
-                abuseipdb_info = check_ip_abuseipdb(ip)
-                if abuseipdb_info and (abuseipdb_info.get("available") or abuseipdb_info.get("in_offline_blacklist")):
+                threat_info = check_ip_reputation(ip)
+                if threat_info and threat_info.get("is_malicious"):
                     break
-    except ImportError:
-        pass
 
-    # Behavioural analysis scores for risk computation
+    # AbuseIPDB enrichment (skipped in FAST_MODE)
+    abuseipdb_info = None
+    if not config.FAST_MODE:
+        try:
+            from services.abuseipdb import check_ip_abuseipdb
+            for ip in (dst_ip, src_ip):
+                if not is_private_ip(ip):
+                    abuseipdb_info = check_ip_abuseipdb(ip)
+                    if abuseipdb_info and (abuseipdb_info.get("available") or abuseipdb_info.get("in_offline_blacklist")):
+                        break
+        except ImportError:
+            pass
+
+    # Behavioural analysis scores for risk computation (skipped in FAST_MODE)
     behaviour_scores = None
-    if config.behaviour_analyzer and not is_private_ip(src_ip):
-        analysis = config.behaviour_analyzer.analyze_device(src_ip)
-        if analysis and analysis.get("scores", {}).get("composite_anomaly", 0) > 0:
-            behaviour_scores = analysis["scores"]
+    if not config.FAST_MODE:
+        if config.behaviour_analyzer and not is_private_ip(src_ip):
+            analysis = config.behaviour_analyzer.analyze_device(src_ip)
+            if analysis and analysis.get("scores", {}).get("composite_anomaly", 0) > 0:
+                behaviour_scores = analysis["scores"]
 
-    # Feed behavioural analysis engine
-    if config.behaviour_analyzer and not is_private_ip(dst_ip):
-        config.behaviour_analyzer.record_packet(
-            src_ip, dst_ip, dst_port, protocol, pkt_size, now
-        )
+        # Feed behavioural analysis engine
+        if config.behaviour_analyzer and not is_private_ip(dst_ip):
+            config.behaviour_analyzer.record_packet(
+                src_ip, dst_ip, dst_port, protocol, pkt_size, now
+            )
 
     # Risk score (multi-factor weighted)
     risk = compute_risk_score(

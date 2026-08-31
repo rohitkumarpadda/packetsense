@@ -51,12 +51,15 @@ agent_bp = Blueprint("agent", __name__)
 # We try the free aliases first, then the paid aliases as a fallback if the
 # key has access. This keeps the agent working when OpenRouter removes a free slug.
 AGENT_MODELS = [
-    # ── Free tier models (verified Sept 2026) ──────────────────────────
-    "google/gemma-4-31b-it:free",          # Google Gemma 4 31B — 262k ctx, solid reasoning
-    "nvidia/nemotron-3.5-lightning:free",  # NVIDIA Nemotron 3.5 Lightning — 1M ctx, fast
-    "minimax/minimax-m3:free",             # MiniMax M3 — 1M ctx
+    # ── Primary: non-Google providers (avoid Google AI Studio shared-pool 429s) ──
+    "nvidia/nemotron-3.5-lightning:free",  # NVIDIA — 1M ctx, fast, rarely rate-limited
+    "minimax/minimax-m3:free",             # MiniMax — 1M ctx, separate provider pool
+    "nvidia/nemotron-3-super-120b-a12b:free",  # NVIDIA fallback — 262k ctx
+    # ── Secondary: Google models (good quality but shared-pool gets rate-limited) ──
+    "google/gemma-4-31b-it:free",          # Google Gemma 4 31B — 262k ctx
     "google/gemma-4-26b-a4b-it:free",     # Google Gemma 4 26B MoE — 262k ctx
-    "nvidia/nemotron-3-super-120b-a12b:free",  # NVIDIA Nemotron 3 Super — 262k ctx
+    # ── Safety net: OpenRouter picks best available free model automatically ──
+    "openrouter/free",
 ]
 AGENT_MODEL = AGENT_MODELS[0]
 AGENT_MAX_TOKENS = 1024

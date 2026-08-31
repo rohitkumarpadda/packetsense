@@ -25,6 +25,17 @@ CAPTURE_SUBNET = None  # For switch mode
 CAPTURE_SNAPLEN = 128    # Increased from 96 — captures full IP+TCP/UDP headers + payload prefix
 MAX_HISTORY = 5000       # 16GB RAM machine — keep 5× more packet history
 
+# ── Performance mode ──────────────────────────────────────────────
+# When True, per-packet processing skips heavy offline database lookups:
+#   - FireHOL / IPsum / Blocklist.de threat intel scan
+#   - AbuseIPDB per-packet blacklist check
+#   - Threat intel correlation inside VPN detection
+#   - Behavioural analysis engine (beaconing, exfil, tunnel)
+# Only kept: MMDB geo, keyword/ASN VPN detection, X4BNet/Tor IP ranges, protocol heuristics.
+# Enable this on low-spec hardware or high-traffic interfaces.
+FAST_MODE = True  # Toggle False to re-enable full analysis pipeline
+
+
 # ── Offline user location (used in switch mode when no internet) ─
 USER_LAT = float(os.getenv("USER_LAT", "0"))
 USER_LON = float(os.getenv("USER_LON", "0"))
