@@ -1,32 +1,54 @@
 """
 routes/agent.py — PacketSense AI Agent Blueprint.
 
-Agentic chatbot backed by qwen/qwen3-8b:free via OpenRouter.
+Agentic chatbot backed by Ollama (primary) with OpenRouter as fallback.
 Supports multi-step ReAct-style reasoning: the agent can chain up to
 MAX_AGENT_STEPS tool calls per user message, feeding each result back
 to the LLM for the next action decision.
 
-Tools available:
-  Core data tools:
-  - get_stats           → Packet capture statistics
-  - get_vpn             → All detected VPN IPs
-  - get_top_talkers     → Top IPs by traffic volume
-  - check_ip            → Full VPN + threat intel for a specific IP
-  - get_flows           → Active network flows
+Intent classification:
+  Before any tool is called, the LLM decides whether the user wants
+  conversational interaction or a tool-driven answer. This allows
+  natural greetings, "what is this app?", etc. to receive fluent prose
+  instead of a list of commands.
 
-  Extended agentic tools:
-  - analyze_traffic     → Protocol distribution, port analysis, timing anomalies
-  - get_threat_summary  → Comprehensive threat intel overview
-  - get_vpn_signals     → Detailed VPN signal breakdown for a specific IP
-  - scan_anomalies      → Proactive anomaly scan (VPN+threat correlation)
+Tools available:
+
+  Core data tools:
+  - get_stats              → Packet capture statistics
+  - get_vpn               → All detected VPN IPs
+  - get_top_talkers       → Top IPs by traffic volume
+  - check_ip              → Full VPN + threat intel for a specific IP
+  - get_flows             → Active network flows
+
+  Analysis tools:
+  - analyze_traffic       → Protocol distribution, port analysis, timing anomalies
+  - get_threat_summary    → Comprehensive threat intel overview
+  - get_vpn_signals       → Detailed VPN signal breakdown for a specific IP
+  - scan_anomalies        → Proactive anomaly scan (VPN+threat correlation)
   - get_bandwidth_analysis → Bandwidth by protocol, top consumers
 
+  Behaviour tools:
+  - get_behaviour_summary → Beaconing, exfiltration, VPN-tunnel scoring (all devices)
+  - get_device_behaviour  → Deep behavioural analysis for a specific device IP
+
+  Device / session tools:
+  - get_session_info      → Current session mode, uptime, loaded file, data size
+  - get_capture_devices   → List available network interfaces for capture
+  - get_switch_devices    → Switch-mode device inventory
+  - get_switch_vpn_alerts → Switch-mode VPN alert log
+
+  Enrichment tools:
+  - check_abuse_ip        → AbuseIPDB abuse score + VPN/Tor flag for a specific IP
+  - get_geo_ip            → Full geographic resolution for any IP
+
   Map tools:
-  - inject_packet       → Plot custom src→dst packet on the map
+  - inject_packet         → Plot custom src→dst packet on the map
 
   Utility tools:
-  - explain_packet      → Plain-English explanation of packet fields
-  - general_answer      → Direct factual answer (no live data needed)
+  - explain_packet        → Plain-English explanation of packet fields
+  - export_report         → Generate a JSON session summary report
+  - general_answer        → Direct factual answer or conversational reply
 
 Fallback: regex-intent matcher handles common questions when LLM unavailable.
 """
@@ -47,76 +69,99 @@ agent_bp = Blueprint("agent", __name__)
 
 # ── Model configuration ─────────────────────────────────────────────
 
-# OpenRouter free slugs rotate frequently and may disappear without notice.
-# We try the free aliases first, then the paid aliases as a fallback if the
-# key has access. This keeps the agent working when OpenRouter removes a free slug.
-AGENT_MODELS = [
-    # ── Primary: non-Google providers (avoid Google AI Studio shared-pool 429s) ──
-    "nvidia/nemotron-3.5-lightning:free",  # NVIDIA — 1M ctx, fast, rarely rate-limited
-    "minimax/minimax-m3:free",             # MiniMax — 1M ctx, separate provider pool
-    "nvidia/nemotron-3-super-120b-a12b:free",  # NVIDIA fallback — 262k ctx
-    # ── Secondary: Google models (good quality but shared-pool gets rate-limited) ──
-    "google/gemma-4-31b-it:free",          # Google Gemma 4 31B — 262k ctx
-    "google/gemma-4-26b-a4b-it:free",     # Google Gemma 4 26B MoE — 262k ctx
-    # ── Safety net: OpenRouter picks best available free model automatically ──
+# Ollama is tried first (SSH-tunnelled from remote laptop).
+# OpenRouter free slugs are used as fallback.
+OLLAMA_MODEL_NAME = getattr(config, "OLLAMA_MODEL", "qwen2.5:7b")
+OLLAMA_URL = getattr(config, "OLLAMA_URL", "http://localhost:11434/v1")
+OLLAMA_TIMEOUT = getattr(config, "OLLAMA_TIMEOUT", 60)
+
+OPENROUTER_MODELS = [
+    "nvidia/nemotron-3.5-lightning:free",
+    "minimax/minimax-m3:free",
+    "google/gemma-4-31b-it:free",
     "openrouter/free",
 ]
-AGENT_MODEL = AGENT_MODELS[0]
+
 AGENT_MAX_TOKENS = 1024
-AGENT_TEMPERATURE = 0.3                  # Low temp for factual tool-calling
-MAX_AGENT_STEPS = 3                      # Max tool calls per user message (ReAct loop)
+AGENT_TEMPERATURE = 0.3
+MAX_AGENT_STEPS = 4  # Increased from 3 to allow deeper chains
+
+# Runtime state: which provider/model is actually active
+_active_provider = "unknown"
+_active_model = "unknown"
+_ollama_available = None   # None=unchecked, True/False after first probe
 
 # ── System prompt ────────────────────────────────────────────────────
 
 SYSTEM_PROMPT = """You are PacketSense AI, an expert agentic network analyst embedded in the 5G-PacketSense v2 dashboard.
 
-You operate in a multi-step ReAct loop. For each step, respond ONLY with a JSON object:
+5G-PacketSense v2 is a real-time network monitoring and analysis platform that captures live packets, analyses PCAP files, detects VPNs, maps traffic geographically, scores threats, analyses behaviour (beaconing, exfiltration, tunnels), and monitors switch-connected devices.
+
+You operate in a multi-step ReAct loop. For EVERY response, output ONLY a JSON object — no prose outside it:
 {
-  "tool": "<tool_name>",
-  "params": { ... },
-  "brief_plan": "<one sentence: what this step will do and why>",
+  "mode": "tool" | "chat",
+  "tool": "<tool_name>",           // only when mode=tool
+  "params": { ... },               // only when mode=tool
+  "answer": "<markdown prose>",    // only when mode=chat (direct conversational reply)
+  "brief_plan": "<one sentence>",
   "needs_followup": false
 }
 
-Set "needs_followup": true only when you need one more tool call to complete your analysis.
-Set "needs_followup": false (default) when this is your final/only tool call.
+Mode selection rules:
+- "chat" → use for: greetings, "hello", "what is this app?", "what can you do?", general networking Q&A that doesn't need live data, follow-up clarifications, thanks.
+- "tool" → use for: any question that requires live capture data, IP lookups, VPN info, threat intel, behaviour analysis, device lists, bandwidth stats, etc.
+
+When mode="chat": write a warm, helpful, markdown-formatted reply in "answer". Do NOT call any tool.
+When mode="tool": pick the best tool and set "answer" to "".
 
 Available tools:
 
 CORE DATA:
-- get_stats           (params: {}) — Packet statistics (total, bytes, protocols, VPN count, top talkers)
-- get_vpn             (params: {}) — All VPN IPs with provider, confidence, and classification
-- get_top_talkers     (params: {}) — Top IPs by traffic volume
-- check_ip            (params: {"ip": "<IP>"}) — Full geo + VPN + threat intel for one IP
-- get_flows           (params: {"limit": <int, default 5>}) — Network flows (src→dst pairs)
+- get_stats              (params: {}) — Capture statistics (total pkts, bytes, protocols, VPN count, top talkers)
+- get_vpn               (params: {}) — All VPN IPs with provider, confidence, classification
+- get_top_talkers       (params: {}) — Top IPs by traffic volume
+- check_ip              (params: {"ip": "<IP>"}) — Full geo + VPN + threat intel for one IP
+- get_flows             (params: {"limit": <int, default 5>}) — Network flows (src→dst pairs)
 
 ANALYSIS:
-- analyze_traffic     (params: {}) — Protocol distribution, port patterns, packet-size analysis, timing
-- get_threat_summary  (params: {}) — Threat intel overview: severity counts, top threat IPs, categories
-- get_vpn_signals     (params: {"ip": "<IP>"}) — Full VPN signal breakdown (all confidence weights) for one IP
-- scan_anomalies      (params: {}) — Proactive scan: finds suspicious patterns, high-risk IPs, anomalies
+- analyze_traffic        (params: {}) — Protocol distribution, port patterns, packet-size analysis, timing
+- get_threat_summary     (params: {}) — Threat intel overview: severity counts, top threat IPs, categories
+- get_vpn_signals        (params: {"ip": "<IP>"}) — Full VPN signal breakdown (all confidence weights) for one IP
+- scan_anomalies         (params: {}) — Proactive scan: suspicious patterns, high-risk IPs, anomalies
 - get_bandwidth_analysis (params: {}) — Bandwidth by protocol/port, peak rate, top consumers
 
+BEHAVIOUR:
+- get_behaviour_summary  (params: {}) — All-device behavioural overview: beaconing, exfil, VPN-tunnel scores
+- get_device_behaviour   (params: {"ip": "<IP>"}) — Deep behavioural profile for one device
+
+SESSION / DEVICES:
+- get_session_info       (params: {}) — Current mode, uptime, session name, loaded file, data size
+- get_capture_devices    (params: {}) — Available network interfaces (for capture selection)
+- get_switch_devices     (params: {}) — Switch-monitoring device inventory (MAC, IP, VPN status)
+- get_switch_vpn_alerts  (params: {}) — Switch-mode VPN alert log
+
+ENRICHMENT:
+- check_abuse_ip         (params: {"ip": "<IP>"}) — AbuseIPDB score, VPN/Tor flag, total reports
+- get_geo_ip             (params: {"ip": "<IP>"}) — Full geographic resolution for any IP
+
 MAP:
-- inject_packet       (params: {"src_ip": "<IP>", "dst_ip": "<IP>", "protocol": "TCP|UDP|ICMP"}) — Plot packet on map
+- inject_packet          (params: {"src_ip": "<IP>", "dst_ip": "<IP>", "protocol": "TCP|UDP|ICMP"}) — Plot packet on map
 
 UTILITY:
-- explain_packet      (params: {"fields": "<raw fields text>"}) — Decode packet fields in plain English
-- general_answer      (params: {"answer": "<text>"}) — Direct answer for general networking questions
+- explain_packet         (params: {"fields": "<raw fields text>"}) — Decode packet fields in plain English
+- export_report          (params: {}) — Generate a JSON session summary report
+- general_answer         (params: {"answer": "<text>"}) — Direct factual answer (no live data needed)
 
 Decision rules:
-- ALWAYS respond with valid JSON. No prose outside the JSON.
-- For greetings or generic Q&A: use general_answer.
-- For a specific IP mentioned: prefer check_ip, then possibly get_vpn_signals.
-- For VPN questions: get_vpn; for deep analysis: scan_anomalies.
-- For bandwidth/speed: get_bandwidth_analysis.
-- For security overview: get_threat_summary or scan_anomalies.
-- For protocol breakdown: analyze_traffic.
+- Set needs_followup=true ONLY when you need one more tool call to complete analysis.
+- For IP-specific requests: check_ip first, optionally follow with check_abuse_ip or get_vpn_signals.
+- For security overview: get_threat_summary → scan_anomalies (chained).
+- For suspicious device: get_device_behaviour → check_ip on that device's top destination.
 - For "show on map" / inject: use inject_packet.
-- Use needs_followup=true when chaining: e.g., scan_anomalies → check_ip on suspicious IP.
+- Keep brief_plan to ONE sentence.
 """
 
-# ── Tool executor ────────────────────────────────────────────────────
+# ── Tool executor functions ───────────────────────────────────────────
 
 
 def _get_stats() -> dict:
@@ -125,7 +170,7 @@ def _get_stats() -> dict:
         if config.capture_running:
             s = config.live_stats
             uptime = time.time() - s["start_time"] if s["start_time"] else 0
-            bw = s["total_bytes"] / uptime if uptime > 0 else 0
+            bw = (s["total_bytes"] / uptime) if uptime > 0 else 0.0
             return {
                 "mode": "live",
                 "total_packets": s["total_packets"],
@@ -179,7 +224,6 @@ def _get_stats() -> dict:
 def _get_vpn() -> dict:
     """Return all detected VPN IPs."""
     vpn_list = []
-    # From live capture
     if config.live_stats.get("vpn_details"):
         for ip, detail in config.live_stats["vpn_details"].items():
             vpn_list.append({
@@ -189,7 +233,6 @@ def _get_vpn() -> dict:
                 "classification": detail.get("vpn_classification", "unknown"),
                 "method": detail.get("vpn_method", "unknown"),
             })
-    # From PCAP geo cache
     for ip, geo in config.GEOIP_CACHE.items():
         if geo.get("is_vpn") and ip not in {v["ip"] for v in vpn_list}:
             vpn_list.append({
@@ -341,7 +384,6 @@ def _explain_packet(fields: str) -> dict:
     explanation_parts = []
     fields_lower = fields.lower()
 
-    # Protocol detection
     if "tcp" in fields_lower:
         explanation_parts.append("**Protocol**: TCP (Transmission Control Protocol) — reliable, connection-oriented transport.")
     elif "udp" in fields_lower:
@@ -349,7 +391,6 @@ def _explain_packet(fields: str) -> dict:
     elif "icmp" in fields_lower:
         explanation_parts.append("**Protocol**: ICMP — control/error messages (e.g., ping).")
 
-    # Port hints
     port_match = re.findall(r'\b(\d{2,5})\b', fields)
     port_hints = {
         "443": "HTTPS (encrypted web)", "80": "HTTP (web)", "53": "DNS",
@@ -361,14 +402,12 @@ def _explain_packet(fields: str) -> dict:
         if port in port_hints:
             explanation_parts.append(f"**Port {port}**: {port_hints[port]}")
 
-    # TTL hints
     ttl_match = re.search(r'ttl[=:\s]+(\d+)', fields_lower)
     if ttl_match:
         ttl = int(ttl_match.group(1))
         os_hint = "Linux/Unix" if ttl <= 64 else "Windows" if ttl <= 128 else "Network device"
         explanation_parts.append(f"**TTL={ttl}**: Likely originated from a **{os_hint}** system.")
 
-    # Length hints
     len_match = re.search(r'len[gth]*[=:\s]+(\d+)', fields_lower)
     if len_match:
         length = int(len_match.group(1))
@@ -381,23 +420,17 @@ def _explain_packet(fields: str) -> dict:
     return {"explanation": "\n\n".join(explanation_parts)}
 
 
-# ── Extended agentic tools ─────────────────────────────────────────────
-
-
 def _analyze_traffic() -> dict:
     """Analyze protocol distribution, port patterns, and packet sizes."""
     try:
         if config.conn:
             C = config.COLS
-            # Protocol distribution
             protos = config.conn.execute(
                 f"SELECT {C['proto']}, COUNT(*) as c FROM packets WHERE {C['proto']} IS NOT NULL GROUP BY 1 ORDER BY 2 DESC LIMIT 10"
             ).fetchall()
-            # Top destination ports
             ports = config.conn.execute(
                 'SELECT "dst_port", COUNT(*) as c FROM packets WHERE "dst_port" IS NOT NULL GROUP BY 1 ORDER BY 2 DESC LIMIT 10'
             ).fetchall()
-            # Packet-size distribution (buckets)
             sizes = config.conn.execute(
                 f"""
                 SELECT
@@ -411,7 +444,6 @@ def _analyze_traffic() -> dict:
                 FROM packets GROUP BY 1 ORDER BY 2 DESC
                 """
             ).fetchall()
-            # Unique IPs count
             total = config.conn.execute("SELECT COUNT(*) FROM packets").fetchone()[0]
             u_src = config.conn.execute(f"SELECT COUNT(DISTINCT {C['src']}) FROM packets").fetchone()[0]
             u_dst = config.conn.execute(f"SELECT COUNT(DISTINCT {C['dst']}) FROM packets").fetchone()[0]
@@ -456,7 +488,6 @@ def _get_threat_summary() -> dict:
         if not stats.get("loaded"):
             return {"error": "Threat intel databases not loaded. Run scripts/update_threat_intel.py"}
 
-        # Collect all IPs from PCAP or live cache
         all_ips: list[str] = []
         if config.conn:
             C = config.COLS
@@ -471,7 +502,7 @@ def _get_threat_summary() -> dict:
         top_threats = []
         category_counts: dict = {}
 
-        for ip in all_ips[:2000]:  # Cap at 2000 to keep response fast
+        for ip in all_ips[:2000]:
             rep = check_ip_reputation(ip)
             level = rep.get("threat_level", "none")
             threat_counts[level] = threat_counts.get(level, 0) + 1
@@ -514,7 +545,6 @@ def _get_vpn_signals(ip: str) -> dict:
 
         vpn_signals = geo.get("vpn_signals", [])
         if not vpn_signals:
-            # Re-run detection to get fresh signals
             from services.vpn import detect_vpn
             vpn_info = detect_vpn(ip, geo.get("isp", ""), geo.get("asn", ""))
             vpn_signals = vpn_info.get("signals", [])
@@ -527,7 +557,6 @@ def _get_vpn_signals(ip: str) -> dict:
                 "method": geo.get("vpn_method"),
             }
 
-        # Check API status
         from services.vpn_api import get_status as vpn_api_status
         api_status = vpn_api_status()
 
@@ -543,8 +572,8 @@ def _get_vpn_signals(ip: str) -> dict:
             "signals": vpn_signals,
             "api_sources_queried": {
                 "vpnapi_io": api_status.get("vpnapi_io", {}).get("enabled", False),
-                "ipinfo_io": True,  # always active (no key needed)
-                "ip_api_com": True,  # always active (no key needed)
+                "ipinfo_io": True,
+                "ip_api_com": True,
             },
         }
     except Exception as e:
@@ -560,7 +589,6 @@ def _scan_anomalies() -> dict:
         summary = {"vpn_confirmed": 0, "vpn_likely": 0, "threat_critical": 0, "threat_high": 0,
                    "suspicious_ports": 0, "beaconing": 0}
 
-        # Collect all IPs
         all_ips: list[str] = []
         if config.conn:
             C = config.COLS
@@ -571,27 +599,24 @@ def _scan_anomalies() -> dict:
         elif config.capture_running:
             all_ips = list(config.live_stats.get("unique_ips", set()))
 
-        # Check each IP (cap to keep response time reasonable)
         SUSPICIOUS_PORTS = {4444, 5555, 6666, 6667, 31337, 12345, 9050, 9150}
         for ip in all_ips[:500]:
             geo = config.GEOIP_CACHE.get(ip, {})
             threat = check_ip_reputation(ip)
             reasons = []
 
-            # VPN detection
             vpn_class = geo.get("vpn_classification", "not_vpn")
             if vpn_class == "vpn_confirmed":
                 summary["vpn_confirmed"] += 1
-                reasons.append(f"VPN confirmed (confidence {geo.get('vpn_confidence', 0)}%, provider: {geo.get('vpn_provider', '?')})")  
+                reasons.append(f"VPN confirmed (confidence {geo.get('vpn_confidence', 0)}%, provider: {geo.get('vpn_provider', '?')})")
             elif vpn_class == "vpn_likely":
                 summary["vpn_likely"] += 1
                 reasons.append(f"VPN likely (confidence {geo.get('vpn_confidence', 0)}%)")
 
-            # Threat intel
             t_level = threat.get("threat_level", "none")
             if t_level == "critical":
                 summary["threat_critical"] += 1
-                reasons.append(f"CRITICAL threat (sources: {', '.join(threat.get('sources', [])[:3])})") 
+                reasons.append(f"CRITICAL threat (sources: {', '.join(threat.get('sources', [])[:3])})")
             elif t_level == "high":
                 summary["threat_high"] += 1
                 reasons.append(f"HIGH threat (categories: {', '.join(threat.get('categories', [])[:3])})")
@@ -603,7 +628,7 @@ def _scan_anomalies() -> dict:
                 if t_level == "critical": risk_score += 50
                 elif t_level == "high": risk_score += 35
                 if vpn_class != "not_vpn" and t_level in ("critical", "high"):
-                    risk_score += 20  # Correlation bonus
+                    risk_score += 20
                 anomalies.append({
                     "ip": ip,
                     "risk_score": min(risk_score, 100),
@@ -612,7 +637,6 @@ def _scan_anomalies() -> dict:
                     "isp": geo.get("isp", "?"),
                 })
 
-        # Check for suspicious ports in PCAP
         if config.conn:
             try:
                 port_rows = config.conn.execute(
@@ -659,7 +683,6 @@ def _get_bandwidth_analysis() -> dict:
             total_pkts = config.conn.execute("SELECT COUNT(*) FROM packets").fetchone()[0]
             avg_pkt_size = total_bytes / total_pkts if total_pkts > 0 else 0
 
-            # Bytes by protocol
             proto_bytes = config.conn.execute(
                 f"""SELECT {C['proto']}, COUNT(*) as pkts,
                     COALESCE(SUM(TRY_CAST({C['len']} AS INTEGER)),0) as bytes
@@ -667,7 +690,6 @@ def _get_bandwidth_analysis() -> dict:
                     GROUP BY 1 ORDER BY 3 DESC LIMIT 8"""
             ).fetchall()
 
-            # Top destination ports by bytes
             port_bytes = config.conn.execute(
                 f"""SELECT "dst_port", COUNT(*) as pkts,
                     COALESCE(SUM(TRY_CAST({C['len']} AS INTEGER)),0) as bytes
@@ -675,12 +697,11 @@ def _get_bandwidth_analysis() -> dict:
                     GROUP BY 1 ORDER BY 3 DESC LIMIT 10"""
             ).fetchall()
 
-            # Time range and rate
             time_range = config.conn.execute(
                 f"SELECT MIN({C['time']}), MAX({C['time']}) FROM packets"
             ).fetchone()
             duration = (time_range[1] - time_range[0]) if (time_range[0] and time_range[1]) else 0
-            avg_bps = (total_bytes * 8 / duration) if duration > 0 else 0  # bits/sec
+            avg_bps = (total_bytes * 8 / duration) if duration > 0 else 0
 
             return {
                 "mode": "pcap",
@@ -712,23 +733,322 @@ def _get_bandwidth_analysis() -> dict:
         return {"error": str(e)}
 
 
+# ── New tool: Behaviour analysis ──────────────────────────────────────
+
+def _get_behaviour_summary() -> dict:
+    """All-device behavioural overview: beaconing, exfil, VPN-tunnel scores."""
+    analyzer = config.behaviour_analyzer
+    if not analyzer:
+        return {"error": "Behaviour analyzer not active. Start a live capture to enable behavioural analysis."}
+    try:
+        summary = analyzer.get_summary()
+        return {
+            "total_devices_tracked": summary.get("total_devices", 0),
+            "suspicious_devices": summary.get("suspicious_devices", 0),
+            "top_suspicious": [
+                {
+                    "ip": d["device_ip"],
+                    "composite_anomaly_score": d["scores"]["composite_anomaly"],
+                    "vpn_tunnel_score": d["scores"]["vpn_tunnel"],
+                    "beaconing_score": d["scores"]["beaconing"],
+                    "exfil_score": d["scores"]["data_exfiltration"],
+                    "classifications": d["classifications"],
+                    "total_bytes": d["total_bytes"],
+                    "flow_count": d["flow_count"],
+                }
+                for d in summary.get("suspicious", [])[:10]
+            ],
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _get_device_behaviour(ip: str) -> dict:
+    """Deep behavioural profile for a specific device IP."""
+    if not ip:
+        return {"error": "No IP provided"}
+    analyzer = config.behaviour_analyzer
+    if not analyzer:
+        return {"error": "Behaviour analyzer not active. Start a live capture to enable."}
+    try:
+        analysis = analyzer.analyze_device(ip)
+        return analysis
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ── New tool: Session info ────────────────────────────────────────────
+
+def _get_session_info() -> dict:
+    """Current session mode, uptime, loaded file, and data summary."""
+    now = time.time()
+    info: dict = {
+        "timestamp": datetime.now().isoformat(),
+        "mode": "idle",
+        "pcap_loaded": False,
+        "live_capture_active": False,
+        "switch_monitor_active": False,
+    }
+
+    if config.capture_running:
+        info["mode"] = "live_capture"
+        info["live_capture_active"] = True
+        s = config.live_stats
+        uptime = now - s["start_time"] if s["start_time"] else 0
+        info["uptime_seconds"] = round(uptime, 1)
+        info["uptime_human"] = _fmt_duration(uptime)
+        info["session_name"] = config.capture_session_name or "unnamed"
+        info["packets_captured"] = s["total_packets"]
+        info["bytes_captured"] = s["total_bytes"]
+        info["unique_ips"] = len(s["unique_ips"])
+        info["vpn_ips_detected"] = len(s["vpn_ips"])
+
+    if config.SWITCH_MONITOR_RUNNING:
+        info["switch_monitor_active"] = True
+        info["switch_devices_count"] = len(config.switch_devices)
+
+    if config.conn:
+        info["pcap_loaded"] = True
+        if info["mode"] == "idle":
+            info["mode"] = "pcap_analysis"
+        info["parquet_path"] = str(config.parquet_path) if config.parquet_path else "unknown"
+        try:
+            total = config.conn.execute("SELECT COUNT(*) FROM packets").fetchone()[0]
+            info["pcap_total_packets"] = total
+        except Exception:
+            pass
+
+    info["geoip_cache_size"] = len(config.GEOIP_CACHE)
+    info["vpn_cache_size"] = len(config.VPN_CACHE)
+    info["fast_mode"] = config.FAST_MODE
+    info["abuseipdb_api_enabled"] = config.ABUSEIPDB_ENABLED
+    info["abuseipdb_calls_today"] = config.ABUSEIPDB_DAILY_COUNT
+
+    return info
+
+
+def _fmt_duration(seconds: float) -> str:
+    """Format seconds as human-readable duration."""
+    s = int(seconds)
+    if s < 60:
+        return f"{s}s"
+    if s < 3600:
+        return f"{s // 60}m {s % 60}s"
+    return f"{s // 3600}h {(s % 3600) // 60}m"
+
+
+# ── New tool: Capture devices ─────────────────────────────────────────
+
+def _get_capture_devices() -> dict:
+    """List available network interfaces for capture."""
+    try:
+        import platform
+        ifaces = []
+        if platform.system() == "Windows":
+            try:
+                from scapy.arch.windows import get_windows_if_list
+                raw = get_windows_if_list()
+                skip = ["WFP", "Filter", "Pseudo", "Tunneling", "6to4", "SSTP", "IKEv2", "L2TP"]
+                for iface in raw:
+                    name = iface.get("name", "")
+                    desc = iface.get("description", "")
+                    if any(s.lower() in desc.lower() for s in skip):
+                        continue
+                    ifaces.append({
+                        "name": name,
+                        "description": desc,
+                        "ips": iface.get("ips", []),
+                        "mac": iface.get("mac", ""),
+                    })
+            except Exception as e:
+                return {"error": f"Could not list interfaces: {e}"}
+        else:
+            try:
+                from scapy.all import get_if_list
+                for iface in get_if_list():
+                    ifaces.append({"name": iface, "description": iface})
+            except Exception as e:
+                return {"error": f"Could not list interfaces: {e}"}
+        return {
+            "interface_count": len(ifaces),
+            "interfaces": ifaces[:20],
+            "current_interface": config.CAPTURE_INTERFACE or "all",
+            "capture_mode": config.CAPTURE_MODE,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ── New tool: Switch devices ──────────────────────────────────────────
+
+def _get_switch_devices() -> dict:
+    """Switch-monitoring device inventory."""
+    if not config.SWITCH_MONITOR_RUNNING and not config.switch_devices:
+        return {"error": "Switch monitor is not active. Start capture in switch mode to see devices."}
+    try:
+        devices = []
+        with config.switch_device_lock:
+            for mac, dev in config.switch_devices.items():
+                devices.append({
+                    "mac": mac,
+                    "ip": dev.get("ip", "?"),
+                    "hostname": dev.get("hostname", ""),
+                    "vendor": dev.get("vendor", ""),
+                    "vpn_detected": dev.get("vpn_detected", False),
+                    "vpn_provider": dev.get("vpn_provider", ""),
+                    "last_seen": dev.get("last_seen", ""),
+                    "packets": dev.get("packets", 0),
+                    "bytes": dev.get("bytes", 0),
+                })
+        devices.sort(key=lambda d: d["packets"], reverse=True)
+        return {
+            "total_devices": len(devices),
+            "vpn_devices": sum(1 for d in devices if d["vpn_detected"]),
+            "devices": devices[:25],
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+def _get_switch_vpn_alerts() -> dict:
+    """Switch-mode VPN alert log."""
+    alerts = config.switch_vpn_alerts
+    if not alerts:
+        return {"alert_count": 0, "alerts": [], "message": "No switch VPN alerts recorded."}
+    return {
+        "alert_count": len(alerts),
+        "alerts": alerts[-20:],  # Most recent 20
+    }
+
+
+# ── New tool: AbuseIPDB check ─────────────────────────────────────────
+
+def _check_abuse_ip(ip: str) -> dict:
+    """AbuseIPDB abuse score, VPN/Tor flag, total reports for a specific IP."""
+    if not ip:
+        return {"error": "No IP provided"}
+    try:
+        from services.abuseipdb import check_ip_abuseipdb
+        result = check_ip_abuseipdb(ip)
+        result["ip"] = ip
+        return result
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ── New tool: Full geo resolution ────────────────────────────────────
+
+def _get_geo_ip(ip: str) -> dict:
+    """Full geographic resolution for any IP address."""
+    if not ip:
+        return {"error": "No IP provided"}
+    try:
+        geo = resolve_ip(ip)
+        if not geo:
+            return {"error": f"Could not resolve IP: {ip}"}
+        return {
+            "ip": ip,
+            "city": geo.get("city", "Unknown"),
+            "region": geo.get("region", ""),
+            "country": geo.get("country", "Unknown"),
+            "country_code": geo.get("country_code", ""),
+            "continent": geo.get("continent", ""),
+            "lat": geo.get("lat"),
+            "lon": geo.get("lon"),
+            "isp": geo.get("isp", "Unknown"),
+            "org": geo.get("org", ""),
+            "asn": geo.get("asn", "Unknown"),
+            "is_vpn": geo.get("is_vpn", False),
+            "vpn_provider": geo.get("vpn_provider"),
+            "vpn_confidence": geo.get("vpn_confidence", 0),
+            "vpn_classification": geo.get("vpn_classification", "not_vpn"),
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ── New tool: Export session report ──────────────────────────────────
+
+def _export_report() -> dict:
+    """Generate a JSON session summary report for the current session."""
+    report: dict = {
+        "generated_at": datetime.now().isoformat(),
+        "session_info": _get_session_info(),
+    }
+
+    # Stats
+    stats = _get_stats()
+    if not stats.get("error"):
+        report["stats"] = stats
+
+    # VPN summary
+    vpn = _get_vpn()
+    report["vpn_summary"] = {
+        "total_vpn_ips": vpn.get("vpn_count", 0),
+        "top_vpn_ips": vpn.get("vpn_ips", [])[:5],
+    }
+
+    # Top talkers
+    talkers = _get_top_talkers()
+    if not talkers.get("error"):
+        report["top_talkers"] = talkers.get("top_talkers", [])[:5]
+
+    # Threat summary (fast — skip full scan)
+    try:
+        from services.threat_intel import get_load_stats
+        intel_stats = get_load_stats()
+        report["threat_intel_status"] = {
+            "loaded": intel_stats.get("loaded", False),
+            "sources": intel_stats.get("sources", {}),
+        }
+    except Exception:
+        pass
+
+    # Behaviour summary (if active)
+    if config.behaviour_analyzer:
+        try:
+            beh = _get_behaviour_summary()
+            if not beh.get("error"):
+                report["behaviour_summary"] = beh
+        except Exception:
+            pass
+
+    report["export_note"] = "This report is a point-in-time snapshot. Use the dashboard for real-time monitoring."
+    return report
+
+
 # ── Tool dispatch table ───────────────────────────────────────────────
 
 TOOLS = {
-    "get_stats": lambda p: _get_stats(),
-    "get_vpn": lambda p: _get_vpn(),
-    "get_top_talkers": lambda p: _get_top_talkers(),
-    "check_ip": lambda p: _check_ip(p.get("ip", "")),
-    "get_flows": lambda p: _get_flows(p.get("limit", 5)),
-    "inject_packet": lambda p: _inject_packet(p.get("src_ip", ""), p.get("dst_ip", ""), p.get("protocol", "TCP")),
-    "explain_packet": lambda p: _explain_packet(p.get("fields", "")),
-    "general_answer": lambda p: {"answer": p.get("answer", "")},
-    # Extended agentic tools
-    "analyze_traffic":      lambda p: _analyze_traffic(),
-    "get_threat_summary":   lambda p: _get_threat_summary(),
-    "get_vpn_signals":      lambda p: _get_vpn_signals(p.get("ip", "")),
-    "scan_anomalies":       lambda p: _scan_anomalies(),
+    # Core
+    "get_stats":              lambda p: _get_stats(),
+    "get_vpn":                lambda p: _get_vpn(),
+    "get_top_talkers":        lambda p: _get_top_talkers(),
+    "check_ip":               lambda p: _check_ip(p.get("ip", "")),
+    "get_flows":              lambda p: _get_flows(p.get("limit", 5)),
+    # Analysis
+    "analyze_traffic":        lambda p: _analyze_traffic(),
+    "get_threat_summary":     lambda p: _get_threat_summary(),
+    "get_vpn_signals":        lambda p: _get_vpn_signals(p.get("ip", "")),
+    "scan_anomalies":         lambda p: _scan_anomalies(),
     "get_bandwidth_analysis": lambda p: _get_bandwidth_analysis(),
+    # Behaviour
+    "get_behaviour_summary":  lambda p: _get_behaviour_summary(),
+    "get_device_behaviour":   lambda p: _get_device_behaviour(p.get("ip", "")),
+    # Session / devices
+    "get_session_info":       lambda p: _get_session_info(),
+    "get_capture_devices":    lambda p: _get_capture_devices(),
+    "get_switch_devices":     lambda p: _get_switch_devices(),
+    "get_switch_vpn_alerts":  lambda p: _get_switch_vpn_alerts(),
+    # Enrichment
+    "check_abuse_ip":         lambda p: _check_abuse_ip(p.get("ip", "")),
+    "get_geo_ip":             lambda p: _get_geo_ip(p.get("ip", "")),
+    # Map
+    "inject_packet":          lambda p: _inject_packet(p.get("src_ip", ""), p.get("dst_ip", ""), p.get("protocol", "TCP")),
+    # Utility
+    "explain_packet":         lambda p: _explain_packet(p.get("fields", "")),
+    "export_report":          lambda p: _export_report(),
+    "general_answer":         lambda p: {"answer": p.get("answer", "")},
 }
 
 # ── Regex fallback (no LLM) ───────────────────────────────────────────
@@ -737,73 +1057,155 @@ def _regex_intent(message: str) -> dict:
     """Rule-based intent matching when LLM is unavailable."""
     msg = message.lower().strip()
 
-    # IP address pattern
     ip_match = re.search(r'\b(\d{1,3}(?:\.\d{1,3}){3})\b', message)
-
-    # Inject pattern: two IPs
     ips = re.findall(r'\b(\d{1,3}(?:\.\d{1,3}){3})\b', message)
+
     if len(ips) >= 2 and any(k in msg for k in ["inject", "plot", "show on map", "send", "map"]):
         proto = "UDP" if "udp" in msg else "ICMP" if "icmp" in msg else "TCP"
-        return {"tool": "inject_packet", "params": {"src_ip": ips[0], "dst_ip": ips[1], "protocol": proto}, "brief_plan": f"Plotting {ips[0]} → {ips[1]} ({proto}) on map"}
+        return {"mode": "tool", "tool": "inject_packet", "params": {"src_ip": ips[0], "dst_ip": ips[1], "protocol": proto}, "brief_plan": f"Plotting {ips[0]} → {ips[1]} ({proto}) on map"}
+
+    if ip_match and any(k in msg for k in ["abuse", "abuseipdb", "reports", "reported"]):
+        return {"mode": "tool", "tool": "check_abuse_ip", "params": {"ip": ip_match.group(1)}, "brief_plan": f"Checking AbuseIPDB score for {ip_match.group(1)}"}
+
+    if ip_match and any(k in msg for k in ["behav", "beaconing", "exfil", "tunnel", "device analysis"]):
+        return {"mode": "tool", "tool": "get_device_behaviour", "params": {"ip": ip_match.group(1)}, "brief_plan": f"Analysing behaviour for device {ip_match.group(1)}"}
+
+    if ip_match and any(k in msg for k in ["geo", "location", "where is", "country", "city", "isp"]):
+        return {"mode": "tool", "tool": "get_geo_ip", "params": {"ip": ip_match.group(1)}, "brief_plan": f"Resolving geo for {ip_match.group(1)}"}
 
     if ip_match and any(k in msg for k in ["check", "look up", "is", "what", "who", "vpn", "threat", "reputation"]):
-        return {"tool": "check_ip", "params": {"ip": ip_match.group(1)}, "brief_plan": f"Checking IP {ip_match.group(1)}"}
+        return {"mode": "tool", "tool": "check_ip", "params": {"ip": ip_match.group(1)}, "brief_plan": f"Checking IP {ip_match.group(1)}"}
 
     if any(k in msg for k in ["vpn signal", "vpn detail", "vpn breakdown", "vpn weight", "why vpn"]):
         if ip_match:
-            return {"tool": "get_vpn_signals", "params": {"ip": ip_match.group(1)}, "brief_plan": f"Getting VPN signal breakdown for {ip_match.group(1)}"}
+            return {"mode": "tool", "tool": "get_vpn_signals", "params": {"ip": ip_match.group(1)}, "brief_plan": f"Getting VPN signal breakdown for {ip_match.group(1)}"}
+
+    if any(k in msg for k in ["behaviour", "behavior", "beaconing", "exfil", "all devices"]):
+        return {"mode": "tool", "tool": "get_behaviour_summary", "params": {}, "brief_plan": "Getting behavioural analysis summary for all tracked devices"}
+
+    if any(k in msg for k in ["session", "uptime", "loaded", "current mode", "session info", "what mode", "what's loaded"]):
+        return {"mode": "tool", "tool": "get_session_info", "params": {}, "brief_plan": "Fetching current session info"}
+
+    if any(k in msg for k in ["interface", "capture device", "network card", "adapter"]):
+        return {"mode": "tool", "tool": "get_capture_devices", "params": {}, "brief_plan": "Listing available network interfaces"}
+
+    if any(k in msg for k in ["switch device", "switch monitor", "connected device", "lan device"]):
+        return {"mode": "tool", "tool": "get_switch_devices", "params": {}, "brief_plan": "Getting switch-mode device inventory"}
+
+    if any(k in msg for k in ["switch alert", "vpn alert", "switch vpn"]):
+        return {"mode": "tool", "tool": "get_switch_vpn_alerts", "params": {}, "brief_plan": "Getting switch VPN alert log"}
+
+    if any(k in msg for k in ["export", "report", "summary report", "download report"]):
+        return {"mode": "tool", "tool": "export_report", "params": {}, "brief_plan": "Generating session summary report"}
 
     if any(k in msg for k in ["vpn", "proxy", "tor", "detected"]):
-        return {"tool": "get_vpn", "params": {}, "brief_plan": "Fetching VPN detections"}
+        return {"mode": "tool", "tool": "get_vpn", "params": {}, "brief_plan": "Fetching VPN detections"}
 
     if any(k in msg for k in ["anomal", "suspicious", "threat scan", "risk scan", "proactive", "scan"]):
-        return {"tool": "scan_anomalies", "params": {}, "brief_plan": "Scanning for traffic anomalies and high-risk IPs"}
+        return {"mode": "tool", "tool": "scan_anomalies", "params": {}, "brief_plan": "Scanning for traffic anomalies and high-risk IPs"}
 
     if any(k in msg for k in ["threat summary", "threat overview", "malicious", "threat intel"]):
-        return {"tool": "get_threat_summary", "params": {}, "brief_plan": "Getting threat intelligence summary"}
+        return {"mode": "tool", "tool": "get_threat_summary", "params": {}, "brief_plan": "Getting threat intelligence summary"}
 
     if any(k in msg for k in ["bandwidth analysis", "throughput", "data rate", "bytes by proto"]):
-        return {"tool": "get_bandwidth_analysis", "params": {}, "brief_plan": "Analyzing bandwidth by protocol and port"}
+        return {"mode": "tool", "tool": "get_bandwidth_analysis", "params": {}, "brief_plan": "Analyzing bandwidth by protocol and port"}
 
     if any(k in msg for k in ["analyze traffic", "traffic analysis", "protocol distribution", "port analysis"]):
-        return {"tool": "analyze_traffic", "params": {}, "brief_plan": "Analyzing traffic patterns and protocol distribution"}
+        return {"mode": "tool", "tool": "analyze_traffic", "params": {}, "brief_plan": "Analyzing traffic patterns and protocol distribution"}
 
     if any(k in msg for k in ["top talker", "busiest", "most traffic", "top ip"]):
-        return {"tool": "get_top_talkers", "params": {}, "brief_plan": "Getting top talkers"}
+        return {"mode": "tool", "tool": "get_top_talkers", "params": {}, "brief_plan": "Getting top talkers"}
 
     if any(k in msg for k in ["flow", "connection", "src", "dst"]):
-        return {"tool": "get_flows", "params": {"limit": 5}, "brief_plan": "Getting network flows"}
+        return {"mode": "tool", "tool": "get_flows", "params": {"limit": 5}, "brief_plan": "Getting network flows"}
 
     if any(k in msg for k in ["bandwidth", "bytes", "throughput"]):
-        return {"tool": "get_bandwidth_analysis", "params": {}, "brief_plan": "Analyzing bandwidth utilization"}
+        return {"mode": "tool", "tool": "get_bandwidth_analysis", "params": {}, "brief_plan": "Analyzing bandwidth utilization"}
 
     if any(k in msg for k in ["stat", "packet", "total", "count", "how many", "rate"]):
-        return {"tool": "get_stats", "params": {}, "brief_plan": "Fetching capture statistics"}
+        return {"mode": "tool", "tool": "get_stats", "params": {}, "brief_plan": "Fetching capture statistics"}
 
-    if any(k in msg for k in ["explain", "what is", "what does", "decode", "parse", "field"]):
-        return {"tool": "explain_packet", "params": {"fields": message}, "brief_plan": "Explaining packet fields"}
+    if any(k in msg for k in ["explain", "decode", "parse", "field"]):
+        return {"mode": "tool", "tool": "explain_packet", "params": {"fields": message}, "brief_plan": "Explaining packet fields"}
+
+    # Conversational fallback
+    if any(k in msg for k in ["hello", "hi", "hey", "what is", "what are", "what can", "who are", "help", "about"]):
+        return {
+            "mode": "chat",
+            "tool": "general_answer",
+            "params": {},
+            "answer": (
+                " Hi! I'm **PacketSense AI** — your intelligent network analyst.\n\n"
+                "I'm embedded in **5G-PacketSense v2**, a platform for real-time packet capture, "
+                "PCAP analysis, VPN detection, threat intelligence, and network behaviour analysis.\n\n"
+                "Here's what I can do for you:\n"
+                "- [DATA] **Traffic analysis** — protocols, ports, packet sizes\n"
+                "- [VPN] **VPN detection** — confidence scores, provider identification\n"
+                "- [THREAT] **Threat intelligence** — FireHOL, IPsum, AbuseIPDB\n"
+                "- [AI] **Behaviour analysis** — beaconing, exfiltration, tunnel detection\n"
+                "- [RADIO] **Bandwidth analysis** — by protocol, port, and IP\n"
+                "- [PC] **Device monitoring** — switch-mode device inventory\n"
+                "- [MAP] **Map injection** — plot any src→dst packet on the geo-map\n"
+                "- [SCAN] **IP investigation** — geo, ISP, VPN signals, abuse scores\n\n"
+                "Just ask me anything or use the quick-action chips below! 🚀"
+            ),
+            "brief_plan": "Greeting response",
+        }
 
     return {
+        "mode": "tool",
         "tool": "general_answer",
-        "params": {"answer": "I can help with: stats, VPN detections, traffic analysis, threat intelligence, anomaly scanning, bandwidth analysis, IP reputation, flows, and map injection.\n\nTry: **'Scan for anomalies'**, **'Analyze traffic'**, **'Threat summary'**, **'VPN signals for 1.2.3.4'**, **'Check IP 8.8.8.8'**, or **'Inject 192.168.1.1 → 8.8.8.8'**."},
-        "brief_plan": "General guidance"
+        "params": {"answer": "I can help with: stats, VPN detections, traffic & bandwidth analysis, threat intelligence, anomaly scanning, behaviour analysis, device monitoring, IP reputation, flows, and map injection.\n\nTry: **'Scan for anomalies'**, **'Analyse traffic'**, **'Behaviour summary'**, **'Threat summary'**, **'Check IP 8.8.8.8'**, or **'Inject 1.2.3.4 → 8.8.8.8'**."},
+        "brief_plan": "General guidance",
     }
 
 
-# ── LLM caller ─────────────────────────────────────────────────────────
+# ── LLM caller — Ollama primary, OpenRouter fallback ─────────────────
 
-def _call_llm(messages: list) -> str | None:
-    """Call OpenRouter with the agent model. Returns raw response text or None."""
-    api_key = config.OPENROUTER_API_KEY if hasattr(config, "OPENROUTER_API_KEY") else ""
-    if not api_key:
+def _probe_ollama() -> bool:
+    """Quick health check to see if Ollama is reachable."""
+    global _ollama_available
+    try:
+        import urllib.request
+        base = OLLAMA_URL.replace("/v1", "")
+        req = urllib.request.Request(f"{base}/api/tags", method="GET")
+        with urllib.request.urlopen(req, timeout=3) as resp:
+            _ollama_available = resp.status == 200
+    except Exception:
+        _ollama_available = False
+    return _ollama_available
+
+
+def _call_ollama(messages: list) -> str | None:
+    """Call local/tunnelled Ollama. Returns raw response text or None."""
+    global _active_provider, _active_model
+    try:
+        import openai
+        client = openai.OpenAI(api_key="ollama", base_url=OLLAMA_URL, timeout=OLLAMA_TIMEOUT)
+        resp = client.chat.completions.create(
+            model=OLLAMA_MODEL_NAME,
+            messages=messages,
+            max_tokens=AGENT_MAX_TOKENS,
+            temperature=AGENT_TEMPERATURE,
+        )
+        _active_provider = "ollama"
+        _active_model = OLLAMA_MODEL_NAME
+        return resp.choices[0].message.content
+    except Exception as e:
+        print(f"[AGENT] Ollama call failed: {e}")
         return None
 
+
+def _call_openrouter(messages: list) -> str | None:
+    """Call OpenRouter as fallback. Returns raw response text or None."""
+    global _active_provider, _active_model
+    api_key = getattr(config, "OPENROUTER_API_KEY", "")
+    if not api_key:
+        return None
     try:
         import openai
         client = openai.OpenAI(api_key=api_key, base_url="https://openrouter.ai/api/v1")
-
-        global AGENT_MODEL
-        for model_name in AGENT_MODELS:
+        for model_name in OPENROUTER_MODELS:
             try:
                 resp = client.chat.completions.create(
                     model=model_name,
@@ -815,14 +1217,54 @@ def _call_llm(messages: list) -> str | None:
                         "X-Title": "5G-PacketSense Agent",
                     },
                 )
-                AGENT_MODEL = model_name
+                _active_provider = "openrouter"
+                _active_model = model_name
                 return resp.choices[0].message.content
             except Exception as e:
-                print(f"[AGENT] LLM call failed for {model_name}: {e}")
+                print(f"[AGENT] OpenRouter model {model_name} failed: {e}")
         return None
     except Exception as e:
         print(f"[AGENT] OpenRouter client setup failed: {e}")
         return None
+
+
+def _call_llm(messages: list) -> str | None:
+    """Try Ollama first, fall back to OpenRouter, return None if both fail."""
+    global _ollama_available
+    # Probe Ollama if not yet checked
+    if _ollama_available is None:
+        _probe_ollama()
+
+    if _ollama_available:
+        result = _call_ollama(messages)
+        if result is not None:
+            return result
+        # Ollama failed mid-session; mark unavailable, fallback
+        _ollama_available = False
+        print("[AGENT] Ollama unreachable, switching to OpenRouter fallback.")
+
+    return _call_openrouter(messages)
+
+
+# ── Conversational LLM call (free-form prose, no JSON required) ───────
+
+def _call_llm_chat(messages: list) -> str | None:
+    """Call LLM in plain conversational mode (no tool JSON needed)."""
+    # Use a simpler system prompt for pure chat
+    chat_messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are PacketSense AI, a friendly and expert network security assistant "
+                "embedded in the 5G-PacketSense v2 dashboard — a real-time network monitoring, "
+                "VPN detection, threat intelligence, and behavioural analysis platform. "
+                "Reply in markdown. Be concise, warm, and informative. "
+                "If the user asks what the app does, explain it clearly."
+            )
+        }
+    ] + [m for m in messages if m["role"] != "system"]
+
+    return _call_llm(chat_messages)
 
 
 # ── Response formatter ─────────────────────────────────────────────────
@@ -830,12 +1272,12 @@ def _call_llm(messages: list) -> str | None:
 def _format_tool_result(tool: str, result: dict, brief_plan: str) -> str:
     """Turn raw tool result dict into a human-readable markdown string."""
     if result.get("error"):
-        return f"⚠️ {result['error']}"
+        return f"[!] {result['error']}"
 
     if tool == "get_stats":
         mode = result.get("mode", "unknown")
         r = result
-        lines = [f"**📊 Capture Statistics** ({'Live' if mode == 'live' else 'PCAP'} mode)\n"]
+        lines = [f"**[DATA] Capture Statistics** ({'Live' if mode == 'live' else 'PCAP'} mode)\n"]
         if r.get("total_packets") is not None:
             lines.append(f"- **Total packets**: {r['total_packets']:,}")
         if r.get("total_bytes") is not None:
@@ -845,9 +1287,9 @@ def _format_tool_result(tool: str, result: dict, brief_plan: str) -> str:
         if r.get("bandwidth_bps") is not None:
             lines.append(f"- **Bandwidth**: {_fmt_bytes(r['bandwidth_bps'])}/s")
         if r.get("vpn_ips_count"):
-            lines.append(f"- **VPN IPs detected**: {r['vpn_ips_count']} 🔒")
+            lines.append(f"- **VPN IPs detected**: {r['vpn_ips_count']} [VPN]")
         if r.get("uptime_seconds"):
-            lines.append(f"- **Capture uptime**: {int(r['uptime_seconds'])}s")
+            lines.append(f"- **Capture uptime**: {_fmt_duration(r['uptime_seconds'])}")
         if r.get("top_talkers"):
             lines.append("\n**Top Talkers:**")
             for t in r["top_talkers"][:5]:
@@ -861,8 +1303,8 @@ def _format_tool_result(tool: str, result: dict, brief_plan: str) -> str:
     elif tool == "get_vpn":
         count = result.get("vpn_count", 0)
         if count == 0:
-            return "✅ **No VPN IPs detected** in the current capture."
-        lines = [f"🔒 **{count} VPN IP(s) detected:**\n"]
+            return "[OK] **No VPN IPs detected** in the current capture."
+        lines = [f"[VPN] **{count} VPN IP(s) detected:**\n"]
         for v in result.get("vpn_ips", [])[:10]:
             provider = v.get("provider") or "Unknown provider"
             conf = v.get("confidence", 0)
@@ -874,7 +1316,7 @@ def _format_tool_result(tool: str, result: dict, brief_plan: str) -> str:
         talkers = result.get("top_talkers", [])
         if not talkers:
             return "No traffic data available yet."
-        lines = ["**🌐 Top Talkers by Traffic:**\n"]
+        lines = ["**[NET] Top Talkers by Traffic:**\n"]
         for i, t in enumerate(talkers[:10], 1):
             lines.append(f"{i}. `{t['ip']}` — {_fmt_bytes(t['bytes'])}")
         return "\n".join(lines)
@@ -884,17 +1326,17 @@ def _format_tool_result(tool: str, result: dict, brief_plan: str) -> str:
         geo = result.get("geo") or {}
         vpn = result.get("vpn", {})
         threat = result.get("threat", {})
-        lines = [f"**🔍 IP Analysis: `{ip}`**\n"]
+        lines = [f"**[SCAN] IP Analysis: `{ip}`**\n"]
         if geo:
             lines.append(f"- **Location**: {geo.get('city', '?')}, {geo.get('country', '?')}")
             lines.append(f"- **ISP**: {geo.get('isp', 'Unknown')}")
             lines.append(f"- **ASN**: {geo.get('asn', 'Unknown')}")
         is_vpn = vpn.get("is_vpn", False)
-        lines.append(f"- **VPN**: {'🔒 YES — ' + (vpn.get('provider') or 'Unknown provider') if is_vpn else '✅ Not a VPN'}")
+        lines.append(f"- **VPN**: {'[VPN] YES — ' + (vpn.get('provider') or 'Unknown provider') if is_vpn else '[OK] Not a VPN'}")
         if is_vpn:
             lines.append(f"  Confidence: {vpn.get('confidence', 0)}% ({vpn.get('classification', '')})")
         is_threat = threat.get("is_malicious", False)
-        lines.append(f"- **Threat**: {'⚠️ ' + threat.get('threat_level', 'low').upper() + ' — ' + ', '.join(threat.get('categories', [])) if is_threat else '✅ Clean'}")
+        lines.append(f"- **Threat**: {'[!] ' + threat.get('threat_level', 'low').upper() + ' — ' + ', '.join(threat.get('categories', [])) if is_threat else '[OK] Clean'}")
         if threat.get("sources"):
             lines.append(f"  Sources: {', '.join(threat['sources'])}")
         return "\n".join(lines)
@@ -906,7 +1348,7 @@ def _format_tool_result(tool: str, result: dict, brief_plan: str) -> str:
             return f"**Active connections**: {conns} live"
         if not flows:
             return "No flows found."
-        lines = ["**🔄 Top Network Flows:**\n"]
+        lines = ["**[FLOW] Top Network Flows:**\n"]
         for f in flows[:5]:
             lines.append(f"- `{f['src']}` → `{f['dst']}` — {f['packets']:,} pkts, {_fmt_bytes(f['bytes'])}")
         return "\n".join(lines)
@@ -917,9 +1359,9 @@ def _format_tool_result(tool: str, result: dict, brief_plan: str) -> str:
         proto = result.get("protocol", "TCP")
         vpn_warn = ""
         if src.get("is_vpn") or dst.get("is_vpn"):
-            vpn_warn = "\n\n🔒 **VPN detected** on this path!"
+            vpn_warn = "\n\n[VPN] **VPN detected** on this path!"
         return (
-            f"**📍 Custom Packet Injected on Map**\n\n"
+            f"**[MAP] Custom Packet Injected on Map**\n\n"
             f"- **Source**: `{src.get('ip')}` — {src.get('city')}, {src.get('country')} ({src.get('isp', '')})\n"
             f"- **Destination**: `{dst.get('ip')}` — {dst.get('city')}, {dst.get('country')} ({dst.get('isp', '')})\n"
             f"- **Protocol**: {proto}"
@@ -935,7 +1377,7 @@ def _format_tool_result(tool: str, result: dict, brief_plan: str) -> str:
     elif tool == "analyze_traffic":
         r = result
         mode = r.get("mode", "")
-        lines = [f"**📊 Traffic Analysis** ({'Live' if mode == 'live' else 'PCAP'} mode)\n"]
+        lines = [f"**[DATA] Traffic Analysis** ({'Live' if mode == 'live' else 'PCAP'} mode)\n"]
         if r.get("total_packets") is not None:
             lines.append(f"- **Total packets**: {r['total_packets']:,}")
         if r.get("unique_src_ips"):
@@ -956,7 +1398,7 @@ def _format_tool_result(tool: str, result: dict, brief_plan: str) -> str:
             for s in r["packet_size_distribution"]:
                 lines.append(f"  - {s['bucket']}: {s['count']:,}")
         if r.get("vpn_protocol_ports_detected"):
-            lines.append("\n**⚠️ VPN Protocol Ports Detected:**")
+            lines.append("\n**[!] VPN Protocol Ports Detected:**")
             for v in r["vpn_protocol_ports_detected"]:
                 lines.append(f"  - Port `{v['port']}` ({v['name']}): {v['count']:,} packets")
         return "\n".join(lines)
@@ -966,7 +1408,7 @@ def _format_tool_result(tool: str, result: dict, brief_plan: str) -> str:
         total = r.get("total_ips_scanned", 0)
         malicious = r.get("total_malicious", 0)
         breakdown = r.get("threat_breakdown", {})
-        lines = [f"**🛡️ Threat Intelligence Summary**\n"]
+        lines = ["**[THREAT] Threat Intelligence Summary**\n"]
         lines.append(f"- **IPs scanned**: {total:,}")
         lines.append(f"- **Malicious IPs found**: {malicious:,} ({round(100 * malicious / total, 1) if total else 0}%)")
         if breakdown:
@@ -974,7 +1416,7 @@ def _format_tool_result(tool: str, result: dict, brief_plan: str) -> str:
             for level in ("critical", "high", "medium", "low"):
                 cnt = breakdown.get(level, 0)
                 if cnt:
-                    icons = {"critical": "🔴", "high": "🟠", "medium": "🟡", "low": "🟢"}
+                    icons = {"critical": "[CRIT]", "high": "[HIGH]", "medium": "[MED]", "low": "[LOW]"}
                     lines.append(f"  - {icons.get(level, '')} **{level.upper()}**: {cnt}")
         if r.get("top_categories"):
             lines.append("\n**Top Threat Categories:**")
@@ -993,8 +1435,8 @@ def _format_tool_result(tool: str, result: dict, brief_plan: str) -> str:
         conf = r.get("confidence", 0)
         cls = r.get("classification", "not_vpn")
         provider = r.get("provider", "Unknown")
-        lines = [f"**🔍 VPN Signal Breakdown: `{ip}`**\n"]
-        lines.append(f"- **Result**: {'\ud83d\udd12 VPN DETECTED' if is_vpn else '✅ Not a VPN'}")
+        lines = [f"**[SCAN] VPN Signal Breakdown: `{ip}`**\n"]
+        lines.append(f"- **Result**: {'[VPN] VPN DETECTED' if is_vpn else '[OK] Not a VPN'}")
         lines.append(f"- **Confidence**: {conf}% ({cls})")
         if provider and is_vpn:
             lines.append(f"- **Provider**: {provider}")
@@ -1014,21 +1456,21 @@ def _format_tool_result(tool: str, result: dict, brief_plan: str) -> str:
         found = r.get("anomalies_found", 0)
         scanned = r.get("ips_scanned", 0)
         summary = r.get("summary", {})
-        lines = [f"**🔎 Anomaly Scan Results** ({scanned} IPs scanned)\n"]
+        lines = [f"**[SEARCH] Anomaly Scan Results** ({scanned} IPs scanned)\n"]
         if found == 0:
-            lines.append("✅ No anomalies detected in scanned traffic.")
+            lines.append("[OK] No anomalies detected in scanned traffic.")
         else:
             lines.append(f"**{found} anomal{'y' if found == 1 else 'ies'} found:**\n")
             if summary.get("vpn_confirmed"):
-                lines.append(f"  - 🔒 VPN confirmed: {summary['vpn_confirmed']} IP(s)")
+                lines.append(f"  - [VPN] VPN confirmed: {summary['vpn_confirmed']} IP(s)")
             if summary.get("vpn_likely"):
-                lines.append(f"  - 🔒 VPN likely: {summary['vpn_likely']} IP(s)")
+                lines.append(f"  - [VPN] VPN likely: {summary['vpn_likely']} IP(s)")
             if summary.get("threat_critical"):
-                lines.append(f"  - 🔴 Critical threats: {summary['threat_critical']} IP(s)")
+                lines.append(f"  - [CRIT] Critical threats: {summary['threat_critical']} IP(s)")
             if summary.get("threat_high"):
-                lines.append(f"  - 🟠 High threats: {summary['threat_high']} IP(s)")
+                lines.append(f"  - [HIGH] High threats: {summary['threat_high']} IP(s)")
             if summary.get("suspicious_ports"):
-                lines.append(f"  - ⚠️ Suspicious port traffic: {summary['suspicious_ports']} packets")
+                lines.append(f"  - [!] Suspicious port traffic: {summary['suspicious_ports']} packets")
             lines.append("")
             for a in r.get("top_anomalies", [])[:6]:
                 if "ip" in a:
@@ -1045,7 +1487,7 @@ def _format_tool_result(tool: str, result: dict, brief_plan: str) -> str:
     elif tool == "get_bandwidth_analysis":
         r = result
         mode = r.get("mode", "")
-        lines = [f"**📶 Bandwidth Analysis** ({'Live' if mode == 'live' else 'PCAP'} mode)\n"]
+        lines = [f"**[BW] Bandwidth Analysis** ({'Live' if mode == 'live' else 'PCAP'} mode)\n"]
         if r.get("total_bytes") is not None:
             lines.append(f"- **Total data**: {_fmt_bytes(r['total_bytes'])}")
         if r.get("total_packets"):
@@ -1073,7 +1515,180 @@ def _format_tool_result(tool: str, result: dict, brief_plan: str) -> str:
                 lines.append(f"  - `{t['ip']}`: {_fmt_bytes(t['bytes'])}")
         return "\n".join(lines)
 
-    return json.dumps(result, indent=2)
+    elif tool == "get_behaviour_summary":
+        r = result
+        total = r.get("total_devices_tracked", 0)
+        suspicious = r.get("suspicious_devices", 0)
+        lines = [f"**[AI] Behavioural Analysis Summary** ({total} devices tracked)\n"]
+        if suspicious == 0:
+            lines.append("[OK] No suspicious behaviour detected across tracked devices.")
+        else:
+            lines.append(f"[!] **{suspicious} device(s) flagged as suspicious:**\n")
+            for d in r.get("top_suspicious", [])[:8]:
+                score = d.get("composite_anomaly_score", 0)
+                cls = ", ".join(d.get("classifications", []))
+                lines.append(f"- **`{d['ip']}`** (anomaly score: {score}/100)")
+                lines.append(f"  - Classifications: `{cls}`")
+                if d.get("vpn_tunnel_score", 0) >= 40:
+                    lines.append(f"  - [VPN] VPN tunnel score: {d['vpn_tunnel_score']}")
+                if d.get("beaconing_score", 0) >= 40:
+                    lines.append(f"  - [RADIO] Beaconing score: {d['beaconing_score']}")
+                if d.get("exfil_score", 0) >= 40:
+                    lines.append(f"  - [EXPORT] Exfiltration score: {d['exfil_score']}")
+        return "\n".join(lines)
+
+    elif tool == "get_device_behaviour":
+        r = result
+        ip = r.get("device_ip", "?")
+        if r.get("classifications") == ["insufficient_data"]:
+            return f"[!] Not enough data yet for `{ip}`. Need at least 10 packets from this device."
+        scores = r.get("scores", {})
+        cls = r.get("classifications", [])
+        lines = [f"**[AI] Device Behaviour: `{ip}`**\n"]
+        lines.append(f"- **Packets**: {r.get('total_packets', 0):,} | **Bytes**: {_fmt_bytes(r.get('total_bytes', 0))}")
+        lines.append(f"- **Flows**: {r.get('flow_count', 0)} | **Unique destinations**: {r.get('unique_destinations', 0)}")
+        duration = r.get("duration", 0)
+        if duration:
+            lines.append(f"- **Session duration**: {_fmt_duration(duration)}")
+        lines.append(f"\n**Anomaly Scores:**")
+        lines.append(f"  - [VPN] VPN tunnel: **{scores.get('vpn_tunnel', 0)}/100**")
+        lines.append(f"  - [RADIO] Beaconing: **{scores.get('beaconing', 0)}/100**")
+        lines.append(f"  - [EXPORT] Data exfiltration: **{scores.get('data_exfiltration', 0)}/100**")
+        lines.append(f"  - [SEARCH] Composite anomaly: **{scores.get('composite_anomaly', 0)}/100**")
+        lines.append(f"\n**Classification**: `{'`, `'.join(cls)}`")
+        top_flows = r.get("top_flows", [])
+        if top_flows:
+            lines.append("\n**Top Flows:**")
+            for f in top_flows[:4]:
+                lines.append(f"  - → `{f['dst_ip']}:{f['dst_port']}` ({f['protocol']}) — {_fmt_bytes(f['bytes'])}, {f['packets']} pkts")
+        return "\n".join(lines)
+
+    elif tool == "get_session_info":
+        r = result
+        mode_labels = {
+            "idle": "[MED] Idle — no data loaded",
+            "live_capture": "[LOW] Live Capture",
+            "pcap_analysis": "🔵 PCAP Analysis",
+        }
+        mode_str = mode_labels.get(r.get("mode", "idle"), r.get("mode", "idle"))
+        lines = [f"**[INFO] Session Info**\n"]
+        lines.append(f"- **Mode**: {mode_str}")
+        if r.get("session_name"):
+            lines.append(f"- **Session**: {r['session_name']}")
+        if r.get("uptime_human"):
+            lines.append(f"- **Uptime**: {r['uptime_human']}")
+        if r.get("packets_captured") is not None:
+            lines.append(f"- **Packets captured**: {r['packets_captured']:,}")
+        if r.get("bytes_captured") is not None:
+            lines.append(f"- **Bytes captured**: {_fmt_bytes(r['bytes_captured'])}")
+        if r.get("parquet_path"):
+            lines.append(f"- **Loaded file**: `{r['parquet_path']}`")
+        if r.get("pcap_total_packets") is not None:
+            lines.append(f"- **PCAP packets**: {r['pcap_total_packets']:,}")
+        if r.get("switch_monitor_active"):
+            lines.append(f"- **Switch monitor**: [LOW] active ({r.get('switch_devices_count', 0)} devices)")
+        lines.append(f"\n**Cache Stats:**")
+        lines.append(f"  - GeoIP cache: {r.get('geoip_cache_size', 0):,} IPs")
+        lines.append(f"  - VPN cache: {r.get('vpn_cache_size', 0):,} entries")
+        lines.append(f"  - AbuseIPDB: {'[OK] enabled' if r.get('abuseipdb_api_enabled') else '[!] offline only'} ({r.get('abuseipdb_calls_today', 0)} calls today)")
+        return "\n".join(lines)
+
+    elif tool == "get_capture_devices":
+        r = result
+        count = r.get("interface_count", 0)
+        current = r.get("current_interface", "all")
+        lines = [f"**[PC] Network Interfaces** ({count} available)\n"]
+        lines.append(f"- **Current interface**: `{current}` (mode: {r.get('capture_mode', '?')})\n")
+        for iface in r.get("interfaces", [])[:10]:
+            ips = ", ".join(iface.get("ips", [])[:2])
+            ip_str = f" — `{ips}`" if ips else ""
+            lines.append(f"- `{iface['name']}` — {iface.get('description', '')}{ip_str}")
+        return "\n".join(lines)
+
+    elif tool == "get_switch_devices":
+        r = result
+        total = r.get("total_devices", 0)
+        vpn_count = r.get("vpn_devices", 0)
+        lines = [f"**[PLUG] Switch Devices** ({total} detected, {vpn_count} with VPN)\n"]
+        for d in r.get("devices", [])[:10]:
+            vpn_flag = f" [VPN] **{d['vpn_provider']}**" if d.get("vpn_detected") else ""
+            lines.append(f"- `{d['mac']}` → `{d.get('ip', '?')}` {d.get('vendor', '')}{vpn_flag}")
+            lines.append(f"  {d['packets']:,} pkts, {_fmt_bytes(d['bytes'])}")
+        return "\n".join(lines)
+
+    elif tool == "get_switch_vpn_alerts":
+        r = result
+        if r.get("alert_count", 0) == 0:
+            return "[OK] No switch VPN alerts recorded in this session."
+        lines = [f"**[!] Switch VPN Alerts** ({r['alert_count']} total)\n"]
+        for alert in r.get("alerts", [])[-10:]:
+            lines.append(f"- {json.dumps(alert, default=str)[:120]}")
+        return "\n".join(lines)
+
+    elif tool == "check_abuse_ip":
+        r = result
+        ip = r.get("ip", "?")
+        if not r.get("available") and not r.get("in_offline_blacklist"):
+            return f"ℹ️ No AbuseIPDB data available for `{ip}` (API not configured or IP is private)."
+        lines = [f"**[ALERT] AbuseIPDB: `{ip}`**\n"]
+        score = r.get("abuse_confidence", 0)
+        risk = "[CRIT] HIGH" if score >= 75 else "[HIGH] MEDIUM" if score >= 25 else "[LOW] LOW"
+        lines.append(f"- **Abuse confidence**: {score}% ({risk})")
+        if r.get("is_vpn"):
+            lines.append("- **VPN/Proxy**: [VPN] Yes (flagged by AbuseIPDB)")
+        if r.get("is_tor"):
+            lines.append("- **Tor exit node**: [!] Yes")
+        if r.get("total_reports"):
+            lines.append(f"- **Total abuse reports**: {r['total_reports']:,}")
+        if r.get("usage_type"):
+            lines.append(f"- **Usage type**: {r['usage_type']}")
+        if r.get("isp"):
+            lines.append(f"- **ISP**: {r['isp']}")
+        if r.get("in_offline_blacklist"):
+            lines.append("- **Offline blacklist**: [!] IP in AbuseIPDB public blacklist")
+        return "\n".join(lines)
+
+    elif tool == "get_geo_ip":
+        r = result
+        ip = r.get("ip", "?")
+        lines = [f"**[GEO] Geo Resolution: `{ip}`**\n"]
+        loc_parts = [p for p in [r.get("city"), r.get("region"), r.get("country")] if p and p != "Unknown"]
+        lines.append(f"- **Location**: {', '.join(loc_parts) or 'Unknown'}")
+        if r.get("lat") and r.get("lon"):
+            lines.append(f"- **Coordinates**: {r['lat']:.4f}, {r['lon']:.4f}")
+        if r.get("isp") and r["isp"] != "Unknown":
+            lines.append(f"- **ISP**: {r['isp']}")
+        if r.get("org"):
+            lines.append(f"- **Org**: {r['org']}")
+        if r.get("asn") and r["asn"] != "Unknown":
+            lines.append(f"- **ASN**: {r['asn']}")
+        is_vpn = r.get("is_vpn", False)
+        if is_vpn:
+            vpn_conf = r.get('vpn_confidence', 0)
+            vpn_prov = r.get('vpn_provider') or 'Unknown'
+            lines.append(f"- **VPN**: [VPN] {vpn_prov} ({vpn_conf}%)")
+        else:
+            lines.append("- **VPN**: [OK] Not a VPN")
+
+        return "\n".join(lines)
+
+    elif tool == "export_report":
+        r = result
+        lines = ["**[EXPORT] Session Report Generated**\n"]
+        lines.append(f"- **Generated at**: {r.get('generated_at', '?')}")
+        si = r.get("session_info", {})
+        lines.append(f"- **Mode**: {si.get('mode', '?')}")
+        if si.get("packets_captured") is not None:
+            lines.append(f"- **Packets**: {si['packets_captured']:,}")
+        if si.get("pcap_total_packets") is not None:
+            lines.append(f"- **PCAP packets**: {si['pcap_total_packets']:,}")
+        vpn_sum = r.get("vpn_summary", {})
+        if vpn_sum.get("total_vpn_ips") is not None:
+            lines.append(f"- **VPN IPs**: {vpn_sum['total_vpn_ips']}")
+        lines.append(f"\n[OK] Full report data is available in the API response JSON (`tool_result`).")
+        return "\n".join(lines)
+
+    return json.dumps(result, indent=2)[:800]
 
 
 def _fmt_bytes(b: float) -> str:
@@ -1089,7 +1704,7 @@ def _fmt_bytes(b: float) -> str:
 # ── Main chat endpoint ────────────────────────────────────────────────
 
 def _parse_llm_json(llm_response: str) -> dict | None:
-    """Parse JSON tool decision from LLM response, handling markdown fences."""
+    """Parse JSON tool/chat decision from LLM response, handling markdown fences."""
     try:
         clean = re.sub(r"```(?:json)?\s*", "", llm_response).strip().rstrip("`").strip()
         json_match = re.search(r"\{.*\}", clean, re.DOTALL)
@@ -1104,9 +1719,8 @@ def _parse_llm_json(llm_response: str) -> dict | None:
 def chat():
     """Main agent endpoint with multi-step ReAct-style agentic loop.
 
-    The agent can call up to MAX_AGENT_STEPS tools per user message, each
-    step feeding the previous tool result back to the LLM for the next
-    action decision (needs_followup=true in the LLM response).
+    Supports both conversational and tool-driven responses via intent
+    classification. Ollama is tried first; OpenRouter is the fallback.
 
     Request body:
         { "message": str, "history": [{"role": "user"|"assistant", "content": str}] }
@@ -1119,7 +1733,9 @@ def chat():
           "map_action": dict|null,  — non-null for inject_packet
           "tool_result": dict,      — final tool output
           "steps": int,             — how many steps were executed
-          "model": str,
+          "model": str,             — model name used
+          "provider": str,          — "ollama" | "openrouter" | "regex-fallback"
+          "mode": str,              — "chat" | "tool"
         }
     """
     body = request.get_json(silent=True) or {}
@@ -1131,36 +1747,84 @@ def chat():
 
     # Build initial LLM message list
     llm_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    for h in history[-6:]:  # last 3 turns
+    for h in history[-8:]:  # last 4 turns (increased from 3)
         if h.get("role") in ("user", "assistant") and h.get("content"):
             llm_messages.append({"role": h["role"], "content": h["content"]})
     llm_messages.append({"role": "user", "content": user_message})
 
-    # ── ReAct-style agentic loop ──────────────────────────────────
+    # ── Try LLM for intent classification ────────────────────────────
     all_reply_parts: list[str] = []
     tools_chain: list[str] = []
     map_action = None
     last_tool_result: dict = {}
     model_used = "regex-fallback"
+    provider_used = "regex-fallback"
     first_brief_plan = ""
+    response_mode = "tool"
 
+    llm_response = _call_llm(llm_messages)
+    tool_decision = None
+
+    if llm_response:
+        model_used = _active_model
+        provider_used = _active_provider
+        tool_decision = _parse_llm_json(llm_response)
+
+    # ── Conversational mode (mode="chat") ─────────────────────────────
+    if tool_decision and tool_decision.get("mode") == "chat":
+        response_mode = "chat"
+        answer = tool_decision.get("answer", "").strip()
+
+        # If the LLM gave an answer directly, use it
+        if answer:
+            reply_text = answer
+        else:
+            # Ask the LLM again in plain chat mode
+            chat_reply = _call_llm_chat(llm_messages)
+            reply_text = chat_reply if chat_reply else "I'm here to help! Ask me anything about your network traffic."
+
+        first_brief_plan = tool_decision.get("brief_plan", "Conversational reply")
+        return jsonify({
+            "reply": reply_text,
+            "tool_used": "general_answer",
+            "tools_chain": ["general_answer"],
+            "brief_plan": first_brief_plan,
+            "map_action": None,
+            "tool_result": {"answer": reply_text},
+            "steps": 0,
+            "model": model_used,
+            "provider": provider_used,
+            "mode": "chat",
+        })
+
+    # ── Tool mode (mode="tool") — ReAct agentic loop ──────────────────
     for step in range(MAX_AGENT_STEPS):
-        # Try LLM, fall back to regex (only on step 0 for regex)
-        llm_response = _call_llm(llm_messages)
-        tool_decision = None
-
-        if llm_response:
-            model_used = AGENT_MODEL
-            tool_decision = _parse_llm_json(llm_response)
-
-        if not tool_decision:
-            if step == 0:
+        if step == 0:
+            # Already fetched at the top; use existing tool_decision or regex
+            if not tool_decision:
                 tool_decision = _regex_intent(user_message)
-            else:
-                break  # no LLM + not step 0 → stop chaining
+                model_used = "regex-fallback"
+                provider_used = "regex-fallback"
+        else:
+            # Fetch next LLM decision
+            llm_response = _call_llm(llm_messages)
+            tool_decision = None
+            if llm_response:
+                model_used = _active_model
+                provider_used = _active_provider
+                tool_decision = _parse_llm_json(llm_response)
+            if not tool_decision:
+                break
+
+        # Handle chat mode within loop (shouldn't happen, but be safe)
+        if tool_decision.get("mode") == "chat":
+            answer = tool_decision.get("answer", "")
+            if answer:
+                all_reply_parts.append(answer)
+            break
 
         tool_name = tool_decision.get("tool", "general_answer")
-        params     = tool_decision.get("params", {})
+        params = tool_decision.get("params", {})
         brief_plan = tool_decision.get("brief_plan", "")
         needs_followup = bool(tool_decision.get("needs_followup", False))
 
@@ -1180,8 +1844,7 @@ def chat():
         # Format this step's reply
         step_reply = _format_tool_result(tool_name, tool_result, brief_plan)
         if step > 0 and step_reply:
-            # Prefix subsequent steps so the UI shows them as follow-up analysis
-            step_reply = f"\n\n---\n**🤖 Follow-up ({tool_name}):** {brief_plan}\n\n{step_reply}"
+            step_reply = f"\n\n---\n** Follow-up ({tool_name.replace('_', ' ')}):** {brief_plan}\n\n{step_reply}"
         all_reply_parts.append(step_reply)
 
         # Map action (only from inject_packet)
@@ -1193,19 +1856,18 @@ def chat():
                 "protocol": tool_result.get("protocol", "TCP"),
             }
 
-        # Stop if no follow-up needed, or if tool was general_answer
         if not needs_followup or tool_name == "general_answer":
             break
 
         # Feed result back to LLM for next step
-        result_summary = json.dumps(tool_result, default=str)[:1200]  # truncate for token budget
+        result_summary = json.dumps(tool_result, default=str)[:1200]
         llm_messages.append({
             "role": "assistant",
             "content": json.dumps(tool_decision),
         })
         llm_messages.append({
             "role": "user",
-            "content": f"Tool result from {tool_name}:\n{result_summary}\n\nContinue your analysis. If done, set needs_followup=false.",
+            "content": f"Tool result from {tool_name}:\n{result_summary}\n\nContinue analysis. Set needs_followup=false when done.",
         })
 
     reply_text = "".join(all_reply_parts)
@@ -1219,20 +1881,49 @@ def chat():
         "tool_result": last_tool_result,
         "steps": len(tools_chain),
         "model": model_used,
+        "provider": provider_used,
+        "mode": response_mode,
     })
 
 
 @agent_bp.route("/api/agent/status")
 def agent_status():
-    """Return agent configuration and availability."""
-    has_key = bool(getattr(config, "OPENROUTER_API_KEY", ""))
+    """Return agent configuration, Ollama connectivity, and availability."""
+    global _ollama_available
+
+    # Re-probe Ollama on every status call so UI gets fresh data
+    ollama_reachable = _probe_ollama()
+
+    has_openrouter = bool(getattr(config, "OPENROUTER_API_KEY", ""))
+    available = ollama_reachable or has_openrouter
+
+    if ollama_reachable:
+        active_provider = "ollama"
+        active_model = OLLAMA_MODEL_NAME
+    elif has_openrouter:
+        active_provider = "openrouter"
+        active_model = OPENROUTER_MODELS[0]
+    else:
+        active_provider = "regex-fallback"
+        active_model = "regex-fallback"
+
     return jsonify({
-        "model": AGENT_MODEL,
-        "provider": "openrouter",
-        "available": has_key,
+        "model": active_model,
+        "provider": active_provider,
+        "available": available,
+        "ollama": {
+            "reachable": ollama_reachable,
+            "url": OLLAMA_URL,
+            "model": OLLAMA_MODEL_NAME,
+            "timeout": OLLAMA_TIMEOUT,
+        },
+        "openrouter": {
+            "configured": has_openrouter,
+            "fallback_models": OPENROUTER_MODELS[:3],
+        },
         "fallback": "regex-intent",
         "max_steps": MAX_AGENT_STEPS,
-        "agentic_mode": "ReAct (multi-step tool chaining)",
+        "agentic_mode": "ReAct (multi-step tool chaining) + Conversational",
         "tools": list(TOOLS.keys()),
         "tool_count": len(TOOLS),
         "capabilities": [
@@ -1245,8 +1936,16 @@ def agent_status():
             "Threat intelligence summary",
             "Proactive anomaly scanning",
             "Bandwidth utilization analysis",
+            "Behavioural analysis (beaconing, exfil, tunnel)",
+            "Device behaviour profiling",
+            "Session info & capture devices",
+            "Switch device inventory & VPN alerts",
+            "AbuseIPDB per-IP enrichment",
+            "Full geo IP resolution",
+            "Session report export",
             "Custom packet map injection",
             "Packet field explanation",
+            "Natural language conversation",
             "Multi-step ReAct reasoning",
         ],
     })

@@ -882,20 +882,22 @@
 				bottom: calc(var(--bottombar-h) + 16px);
 				right: 20px;
 				z-index: 90;
-				width: 48px;
-				height: 48px;
-				border-radius: 50%;
-				background: linear-gradient(135deg, #6366f1 0%, #38bdf8 100%);
-				border: none;
-				cursor: pointer;
 				display: flex;
 				align-items: center;
-				justify-content: center;
-				font-size: 20px;
-				color: #fff;
-				box-shadow: 0 4px 20px rgba(99,102,241,0.5);
-				transition: transform 0.2s, box-shadow 0.2s;
-				animation: agent-pulse 3s ease-in-out infinite;
+				gap: 7px;
+				padding: 0 16px 0 14px;
+				height: 38px;
+				border-radius: 8px;
+				background: var(--bg-glass);
+				backdrop-filter: blur(16px);
+				border: 1px solid rgba(99,102,241,0.35);
+				cursor: pointer;
+				color: var(--text-muted);
+				font-family: 'Inter', sans-serif;
+				font-size: 12px;
+				font-weight: 500;
+				transition: all 0.2s;
+				box-shadow: 0 4px 16px rgba(0,0,0,0.4);
 			}
 			.agent-fab:hover {
 				transform: scale(1.1);
@@ -968,6 +970,24 @@
 				color: #a5b4fc;
 				border: 1px solid rgba(99,102,241,0.25);
 				white-space: nowrap;
+				display: flex;
+				align-items: center;
+				gap: 5px;
+			}
+			.agent-status-dot {
+				width: 6px;
+				height: 6px;
+				border-radius: 50%;
+				background: #64748b;
+				flex-shrink: 0;
+				transition: background 0.4s;
+			}
+			.agent-status-dot.online { background: #22c55e; box-shadow: 0 0 5px #22c55e88; animation: dot-pulse 2s ease-in-out infinite; }
+			.agent-status-dot.fallback { background: #f59e0b; }
+			.agent-status-dot.offline { background: #ef4444; }
+			@keyframes dot-pulse {
+				0%, 100% { opacity: 1; }
+				50% { opacity: 0.55; }
 			}
 			.agent-close-btn {
 				background: none;
@@ -1035,6 +1055,22 @@
 				margin-bottom: 6px;
 			}
 			/* Typing indicator */
+			.agent-typing-wrapper {
+				display: flex;
+				flex-direction: column;
+				gap: 4px;
+				align-self: flex-start;
+			}
+			.agent-plan-text {
+				font-size: 10px;
+				color: var(--text-dim);
+				margin-left: 4px;
+				font-style: italic;
+				max-width: 200px;
+				white-space: nowrap;
+				overflow: hidden;
+				text-overflow: ellipsis;
+			}
 			.agent-typing {
 				display: flex;
 				align-items: center;
@@ -1045,7 +1081,7 @@
 				border-radius: 14px;
 				border-bottom-left-radius: 4px;
 				align-self: flex-start;
-				max-width: 70px;
+				max-width: 260px;
 			}
 			.typing-dot {
 				width: 6px;
@@ -1145,35 +1181,33 @@
 				max-height: 100px;
 				line-height: 1.5;
 			}
-			.agent-input:focus {
-				border-color: rgba(99,102,241,0.6);
-			}
+			.agent-input:focus { border-color: rgba(99,102,241,0.45); }
 			.agent-input::placeholder { color: var(--text-dim); }
 			.agent-send-btn {
-				width: 36px;
-				height: 36px;
-				border-radius: 10px;
-				border: none;
-				background: linear-gradient(135deg, #6366f1, #38bdf8);
-				color: #fff;
+				width: 34px;
+				height: 34px;
+				border-radius: 7px;
+				border: 1px solid rgba(99,102,241,0.28);
+				background: rgba(99,102,241,0.12);
+				color: #a5b4fc;
 				cursor: pointer;
 				display: flex;
 				align-items: center;
 				justify-content: center;
-				font-size: 14px;
-				transition: filter 0.15s, transform 0.1s;
+				font-size: 12px;
+				transition: all 0.15s;
 				flex-shrink: 0;
 			}
-			.agent-send-btn:hover { filter: brightness(1.2); }
-			.agent-send-btn:active { transform: scale(0.93); }
-			.agent-send-btn:disabled { opacity: 0.5; cursor: not-allowed; }
-			/* Map inject flash */
+			.agent-send-btn:hover { background: rgba(99,102,241,0.25); border-color: rgba(99,102,241,0.5); color: #fff; }
+			.agent-send-btn:active { transform: scale(0.94); }
+			.agent-send-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+			.injected-line { animation: inject-flash 1s ease-in-out 3; }
 			@keyframes inject-flash {
 				0% { stroke-width: 4; stroke-opacity: 1; }
 				50% { stroke-width: 8; stroke-opacity: 0.8; }
 				100% { stroke-width: 4; stroke-opacity: 1; }
 			}
-			.injected-line { animation: inject-flash 1s ease-in-out 3; }
+
 
 			/* ── RESPONSIVE / MOBILE ───────────────────────────── */
 			/* Sidebar overlay backdrop (mobile only) */
@@ -1728,72 +1762,107 @@
 		<div id="agentPanel" class="agent-panel">
 			<!-- Header -->
 			<div class="agent-header">
-				<div class="agent-avatar">🤖</div>
+				<div class="agent-header-icon">
+					<i class="fa-solid fa-microchip"></i>
+				</div>
 				<div class="agent-title-block">
 					<div class="agent-title">PacketSense AI</div>
 					<div class="agent-subtitle" id="agentStatusLine">Initializing...</div>
 				</div>
-				<span class="agent-model-badge" id="agentModelBadge">nemotron-3.5:free</span>
-				<button class="agent-close-btn" onclick="toggleAgentPanel()"><i class="fa-solid fa-xmark"></i></button>
+				<span class="agent-model-badge" id="agentModelBadge">
+					<span class="agent-status-dot" id="agentStatusDot"></span>
+					<span id="agentModelText">connecting</span>
+				</span>
+				<button class="agent-close-btn" onclick="toggleAgentPanel()" title="Close">
+					<i class="fa-solid fa-xmark"></i>
+				</button>
 			</div>
+
 			<!-- Message area -->
 			<div id="agentMessages" class="agent-messages">
 				<!-- Welcome bubble -->
-				<div class="agent-bubble assistant">
-					<div class="tool-badge"><i class="fa-solid fa-circle-info"></i> Welcome</div>
-					<div>👋 I'm your PacketSense AI agent with <strong>multi-step reasoning</strong>. I can:</div>
-					<ul style="margin:6px 0 0 14px;line-height:1.8">
-						<li>🔍 <strong>Scan anomalies</strong> — proactive risk scanning</li>
-						<li>📊 <strong>Analyze traffic</strong> — protocol &amp; port patterns</li>
-						<li>🛡️ <strong>Threat summary</strong> — FireHOL/IPsum/AbuseIPDB</li>
-						<li>🔒 <strong>VPN signals</strong> — full confidence breakdown</li>
-						<li>📡 <strong>Bandwidth analysis</strong> — by protocol &amp; port</li>
-						<li>📍 <strong>Inject packets</strong> on the map</li>
-						<li>🔎 Check any IP's geo, VPN &amp; threat status</li>
-					</ul>
+				<div class="agent-bubble assistant" id="agentWelcomeBubble">
+					<div class="tool-badge"><i class="fa-solid fa-circle-info"></i>&nbsp;PacketSense AI</div>
+					<div>Intelligent network analyst with multi-step reasoning. I can analyse traffic, detect VPNs, scan threats, profile device behaviour, and answer general networking questions.</div>
+					<div style="margin-top:7px;color:var(--text-dim);font-size:11px">Select a quick action below or type a message.</div>
 				</div>
 			</div>
-			<!-- Quick chips -->
+
+			<!-- Quick action chips -->
 			<div class="agent-chips" id="agentChips">
-				<span class="agent-chip" onclick="agentSendChip('Scan for anomalies')">🔍 Scan</span>
-				<span class="agent-chip" onclick="agentSendChip('Analyze traffic patterns')">📊 Traffic</span>
-				<span class="agent-chip" onclick="agentSendChip('Threat intelligence summary')">🛡️ Threats</span>
-				<span class="agent-chip" onclick="agentSendChip('Show VPN detections')">🔒 VPN</span>
-				<span class="agent-chip" onclick="agentSendChip('Bandwidth analysis')">📡 Bandwidth</span>
-				<span class="agent-chip" onclick="agentSendChip('Show capture stats')">📈 Stats</span>
-				<span class="agent-chip" onclick="agentSendChip('Top talkers by traffic')">🌐 Talkers</span>
-				<span class="agent-chip" onclick="toggleInjectForm()">📍 Inject</span>
+				<span class="agent-chip" onclick="agentSendChip('Scan for anomalies')">
+					<i class="fa-solid fa-magnifying-glass"></i> Scan
+				</span>
+				<span class="agent-chip" onclick="agentSendChip('Analyze traffic patterns')">
+					<i class="fa-solid fa-chart-bar"></i> Traffic
+				</span>
+				<span class="agent-chip" onclick="agentSendChip('Threat intelligence summary')">
+					<i class="fa-solid fa-shield-halved"></i> Threats
+				</span>
+				<span class="agent-chip" onclick="agentSendChip('Show VPN detections')">
+					<i class="fa-solid fa-lock"></i> VPN
+				</span>
+				<span class="agent-chip" onclick="agentSendChip('Behaviour summary for all devices')">
+					<i class="fa-solid fa-brain"></i> Behaviour
+				</span>
+				<span class="agent-chip" onclick="agentSendChip('Bandwidth analysis')">
+					<i class="fa-solid fa-wave-square"></i> Bandwidth
+				</span>
+				<span class="agent-chip" onclick="agentSendChip('Show capture stats')">
+					<i class="fa-solid fa-gauge-high"></i> Stats
+				</span>
+				<span class="agent-chip" onclick="agentSendChip('Current session info')">
+					<i class="fa-solid fa-circle-info"></i> Session
+				</span>
+				<span class="agent-chip" onclick="agentSendChip('Top talkers by traffic')">
+					<i class="fa-solid fa-arrow-up-wide-short"></i> Talkers
+				</span>
+				<span class="agent-chip" onclick="agentSendChip('Export session report')">
+					<i class="fa-solid fa-file-export"></i> Report
+				</span>
+				<span class="agent-chip" onclick="agentSendChip('List available capture interfaces')">
+					<i class="fa-solid fa-ethernet"></i> Interfaces
+				</span>
+				<span class="agent-chip" onclick="toggleInjectForm()">
+					<i class="fa-solid fa-location-dot"></i> Map Inject
+				</span>
 			</div>
-			<!-- Custom packet inject form -->
+
+			<!-- Map inject form -->
 			<div class="agent-inject-form" id="agentInjectForm">
-				<input id="injectSrc" type="text" placeholder="Src IP (e.g. 8.8.8.8)" />
-				<input id="injectDst" type="text" placeholder="Dst IP (e.g. 1.1.1.1)" />
+				<input id="injectSrc" type="text" placeholder="Source IP" />
+				<input id="injectDst" type="text" placeholder="Destination IP" />
 				<select id="injectProto">
 					<option value="TCP">TCP</option>
 					<option value="UDP">UDP</option>
 					<option value="ICMP">ICMP</option>
 				</select>
-				<button class="agent-inject-btn" onclick="agentInjectPacket()"><i class="fa-solid fa-location-dot"></i> Plot</button>
+				<button class="agent-inject-btn" onclick="agentInjectPacket()">
+					<i class="fa-solid fa-location-dot"></i> Plot
+				</button>
 			</div>
-			<!-- Input -->
+
+			<!-- Input row -->
+			<div class="agent-input-divider"></div>
 			<div class="agent-input-row">
 				<textarea
 					id="agentInput"
 					class="agent-input"
-					placeholder="Ask me anything about your packets..."
+					placeholder="Ask about your network traffic..."
 					rows="1"
 					onkeydown="agentHandleKey(event)"
-					oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,100)+'px'"
+					oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,96)+'px'"
 				></textarea>
-				<button id="agentSendBtn" class="agent-send-btn" onclick="agentSend()">
+				<button id="agentSendBtn" class="agent-send-btn" onclick="agentSend()" title="Send">
 					<i class="fa-solid fa-paper-plane"></i>
 				</button>
 			</div>
 		</div>
 
-		<!-- Agent FAB (floating action button) -->
-		<button class="agent-fab" id="agentFab" onclick="toggleAgentPanel()" title="PacketSense AI Agent">
-			🤖
+		<!-- Agent FAB -->
+		<button class="agent-fab top-btn" id="agentFab" onclick="toggleAgentPanel()" title="PacketSense AI Agent">
+			<i class="fa-solid fa-microchip"></i>
+			<span>AI Agent</span>
 		</button>
 
 		<!-- ═══ BOTTOM BAR ═══ -->
@@ -2786,13 +2855,6 @@
 				return Math.round(b) + ' B';
 			}
 
-			function fmtDuration(s) {
-				if (s < 60) return Math.round(s) + 's';
-				if (s < 3600)
-					return Math.floor(s / 60) + 'm ' + Math.round(s % 60) + 's';
-				return Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm';
-			}
-
 			// ================================================================
 			// AGENT CHAT
 			// ================================================================
@@ -2821,22 +2883,33 @@
 					const res = await fetch('/api/agent/status');
 					const d = await res.json();
 					const statusEl = document.getElementById('agentStatusLine');
-					const badgeEl = document.getElementById('agentModelBadge');
-					const toolCount = d.tool_count || 12;
-					const steps = d.max_steps || 3;
-					if (d.available) {
-						statusEl.textContent = `AI powered · ${toolCount} tools · ${steps}-step ReAct`;
+					const modelTextEl = document.getElementById('agentModelText');
+					const dotEl = document.getElementById('agentStatusDot');
+					const toolCount = d.tool_count || 22;
+					const steps = d.max_steps || 4;
+
+					// Dot + badge color
+					const ollama = d.ollama || {};
+					if (ollama.reachable) {
+						dotEl.className = 'agent-status-dot online';
+						modelTextEl.textContent = `ollama · ${ollama.model}`;
+						statusEl.textContent = `Ollama · ${toolCount} tools · ${steps}-step ReAct`;
 						statusEl.style.color = 'var(--success)';
-						badgeEl.textContent = d.model || 'gemma-4-31b:free';
-					} else {
-						statusEl.textContent = `Regex fallback · ${toolCount} tools · offline`;
+					} else if (d.openrouter && d.openrouter.configured) {
+						dotEl.className = 'agent-status-dot fallback';
+						modelTextEl.textContent = `openrouter · ${d.model}`;
+						statusEl.textContent = `OpenRouter fallback · ${toolCount} tools`;
 						statusEl.style.color = 'var(--switch-color)';
-						badgeEl.textContent = 'regex-fallback';
-						badgeEl.style.background = 'rgba(245,158,11,0.15)';
-						badgeEl.style.color = 'var(--switch-color)';
+					} else {
+						dotEl.className = 'agent-status-dot offline';
+						modelTextEl.textContent = 'regex-fallback';
+						statusEl.textContent = `Regex fallback · ${toolCount} tools · offline`;
+						statusEl.style.color = 'var(--danger)';
 					}
 				} catch(e) {
 					document.getElementById('agentStatusLine').textContent = 'Agent unavailable';
+					const dotEl = document.getElementById('agentStatusDot');
+					if (dotEl) dotEl.className = 'agent-status-dot offline';
 				}
 			}
 
@@ -2885,32 +2958,40 @@
 				document.getElementById('agentSendBtn').disabled = true;
 
 				// Add user bubble
-				agentAppendBubble('user', message, null);
+				agentAppendBubble('user', message, null, false);
 				agentHistory.push({ role: 'user', content: message });
 
 				// Show typing indicator
-				const typingEl = agentShowTyping();
+				const typingEl = agentShowTyping('Thinking…');
 
 				try {
 					const res = await fetch('/api/agent/chat', {
 						method: 'POST',
 						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({ message, history: agentHistory.slice(-6) }),
+						body: JSON.stringify({ message, history: agentHistory.slice(-8) }),
 					});
 					const data = await res.json();
 
 					agentHideTyping(typingEl);
 
 					if (data.error) {
-						agentAppendBubble('assistant', `⚠️ ${data.error}`, null);
+						agentAppendBubble('assistant', `⚠️ ${data.error}`, null, false);
 					} else {
-						// Show tool chain badge (multi-step) if agent used multiple tools
+						const isChatMode = data.mode === 'chat';
 						const chain = data.tools_chain || [data.tool_used];
 						const toolLabel = chain.length > 1
 							? chain.join(' → ')
 							: data.tool_used;
-						agentAppendBubble('assistant', data.reply, toolLabel);
+						agentAppendBubble('assistant', data.reply, toolLabel, isChatMode);
 						agentHistory.push({ role: 'assistant', content: data.reply });
+
+						// Live-update provider badge from response
+						if (data.provider && data.model && data.provider !== 'regex-fallback') {
+							const modelTextEl = document.getElementById('agentModelText');
+							const dotEl = document.getElementById('agentStatusDot');
+							if (modelTextEl) modelTextEl.textContent = `${data.provider} · ${data.model.split('/').pop()}`;
+							if (dotEl) dotEl.className = data.provider === 'ollama' ? 'agent-status-dot online' : 'agent-status-dot fallback';
+						}
 
 						// Handle map action
 						if (data.map_action && data.map_action.type === 'inject_packet') {
@@ -2919,7 +3000,7 @@
 					}
 				} catch (e) {
 					agentHideTyping(typingEl);
-					agentAppendBubble('assistant', '⚠️ Network error — is the server running?', null);
+					agentAppendBubble('assistant', '⚠️ Network error — is the server running?', null, false);
 				} finally {
 					agentBusy = false;
 					document.getElementById('agentSendBtn').disabled = false;
@@ -2927,31 +3008,41 @@
 				}
 			}
 
-			function agentAppendBubble(role, text, toolUsed) {
+
+			function agentAppendBubble(role, text, toolUsed, isChatMode) {
 				const msgs = document.getElementById('agentMessages');
 				const bubble = document.createElement('div');
 				bubble.className = `agent-bubble ${role}`;
 
 				let content = '';
-				if (role === 'assistant' && toolUsed && toolUsed !== 'general_answer') {
-					const toolIcons = {
-						get_stats: '📊', get_vpn: '🔒', get_top_talkers: '🌐',
-						check_ip: '🔍', get_flows: '🔄', inject_packet: '📍',
-						explain_packet: '📖', analyze_traffic: '📊',
-						get_threat_summary: '🛡️', get_vpn_signals: '🔎',
-						scan_anomalies: '🔍', get_bandwidth_analysis: '📡'
-					};
-					// Multi-step: toolUsed may be 'tool1 → tool2 → tool3'
-					const firstTool = toolUsed.split(' → ')[0].trim();
-					const icon = toolIcons[firstTool] || '🤖';
-					const label = toolUsed.replace(/_/g,' ');
-					content += `<div class="tool-badge">${icon} ${label}</div>`;
+				if (role === 'assistant') {
+					if (isChatMode) {
+						content += `<div class="tool-badge chat-badge"><i class="fa-solid fa-comments"></i>&nbsp;Chat</div>`;
+					} else if (toolUsed && toolUsed !== 'general_answer') {
+						const toolIcons = {
+							get_stats: 'fa-gauge-high', get_vpn: 'fa-lock', get_top_talkers: 'fa-arrow-up-wide-short',
+							check_ip: 'fa-magnifying-glass', get_flows: 'fa-arrows-left-right', inject_packet: 'fa-location-dot',
+							explain_packet: 'fa-book-open', analyze_traffic: 'fa-chart-bar',
+							get_threat_summary: 'fa-shield-halved', get_vpn_signals: 'fa-signal',
+							scan_anomalies: 'fa-triangle-exclamation', get_bandwidth_analysis: 'fa-wave-square',
+							get_behaviour_summary: 'fa-brain', get_device_behaviour: 'fa-brain',
+							get_session_info: 'fa-circle-info', get_capture_devices: 'fa-ethernet',
+							get_switch_devices: 'fa-plug', get_switch_vpn_alerts: 'fa-bell',
+							check_abuse_ip: 'fa-user-slash', get_geo_ip: 'fa-earth-americas',
+							export_report: 'fa-file-export',
+						};
+						const firstTool = toolUsed.split(' → ')[0].trim();
+						const icon = toolIcons[firstTool] || 'fa-robot';
+						const label = toolUsed.replace(/_/g, ' ').replace(' → ', ' · ');
+						content += `<div class="tool-badge"><i class="fa-solid ${icon}"></i>&nbsp;${label}</div>`;
+					}
 				}
 				content += agentFormatMarkdown(text);
 				bubble.innerHTML = content;
 				msgs.appendChild(bubble);
 				msgs.scrollTop = msgs.scrollHeight;
 			}
+
 
 			function agentFormatMarkdown(text) {
 				// Markdown: **bold**, `code`, bullet lists, HR dividers, newlines

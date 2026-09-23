@@ -33,7 +33,7 @@ MAX_HISTORY = 5000       # 16GB RAM machine — keep 5× more packet history
 #   - Behavioural analysis engine (beaconing, exfil, tunnel)
 # Only kept: MMDB geo, keyword/ASN VPN detection, X4BNet/Tor IP ranges, protocol heuristics.
 # Enable this on low-spec hardware or high-traffic interfaces.
-FAST_MODE = True  # Toggle False to re-enable full analysis pipeline
+FAST_MODE = False  # Toggle False to re-enable full analysis pipeline
 
 
 # ── Offline user location (used in switch mode when no internet) ─
@@ -45,6 +45,11 @@ USER_COUNTRY = os.getenv("USER_COUNTRY", "")
 # ── LLM ───────────────────────────────────────────────────────────
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "ollama").lower()
 OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+
+# Ollama (local or SSH-tunnelled remote instance)
+OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/v1")
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
+OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "60"))  # seconds
 
 # ── DuckDB Column Mapping ────────────────────────────────────────
 COLS = {
