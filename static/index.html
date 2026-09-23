@@ -913,6 +913,7 @@
 				right: 20px;
 				width: 400px;
 				height: 560px;
+				max-height: calc(100vh - var(--topbar-h) - var(--bottombar-h) - 96px);
 				background: rgba(8, 12, 26, 0.92);
 				backdrop-filter: blur(24px);
 				border: 1px solid rgba(99,102,241,0.3);
@@ -1739,13 +1740,18 @@
 			</div>
 		</div>
 
-		<!-- ═══ VPN PANEL ═══ -->
+		<!-- ╣═══ VPN PANEL ╣═══ -->
 		<div id="vpnPanel" class="overlay-panel">
 			<div class="overlay-header">
 				<h3><i class="fa-solid fa-shield-halved"></i> VPN Detections</h3>
-				<button class="overlay-close" onclick="toggleOverlay('vpnPanel')">
-					<i class="fa-solid fa-xmark"></i>
-				</button>
+				<div style="display:flex;align-items:center;gap:6px">
+					<button class="top-btn" style="font-size:10px;padding:4px 8px" onclick="clearVpnCache()" title="Flush stale VPN detections and re-evaluate all IPs">
+						<i class="fa-solid fa-broom"></i> Clear Cache
+					</button>
+					<button class="overlay-close" onclick="toggleOverlay('vpnPanel')">
+						<i class="fa-solid fa-xmark"></i>
+					</button>
+				</div>
 			</div>
 			<div class="overlay-body" id="vpnList">
 				<div class="flow-empty">No VPN detected yet</div>
@@ -2643,15 +2649,19 @@
 					const data = await res.json();
 					if (data.status === 'success') {
 						stopCycleTimer();
-						// explicitly stop any background live capture so next start is fresh
 						try { await fetch('/api/capture/stop'); } catch (e) {}
 						resetAll(false);
 						pcapMode = true;
 						liveMode = false;
 						setMode('pcap', 'PCAP Analysis');
-						showStatus(`✓ Loaded ${data.packet_count} packets`);
-						loadFlows();
-						loadPcapStats();
+						showStatus(`✓ Loaded ${data.packet_count} packets — resolving IPs…`);
+						// Step 1: Load stats FIRST — this resolves + caches geo/VPN for ALL unique IPs.
+						// Step 2: THEN load flows — the geo cache is warm so flows render instantly.
+						// Running them in parallel caused duplicate API calls and race conditions.
+						await loadPcapStats();
+						showStatus(`✓ Loaded ${data.packet_count} packets — drawing map…`);
+						await loadFlows();
+						showStatus(`✓ ${data.packet_count} packets loaded`);
 					} else {
 						showStatus(data.error || 'Upload failed', true);
 					}
@@ -2689,67 +2699,78 @@
 					flowListEl.innerHTML = '';
 					document.getElementById('flowCount').textContent = data.total;
 
+					const validBounds = [];
 					data.flows.forEach((flow, idx) => {
-						const s = flow.src,
-							d = flow.dst;
-						const isVpn = s.is_vpn || d.is_vpn;
-						const color = isVpn ? COLORS.vpn : COLORS.tcp;
+						try {
+							const s = flow.src, d = flow.dst;
+							// Guard: skip if coordinates are missing or zero for BOTH endpoints
+							const sLat = Number(s.lat) || 0, sLon = Number(s.lon) || 0;
+							const dLat = Number(d.lat) || 0, dLon = Number(d.lon) || 0;
+							if (!sLat && !sLon && !dLat && !dLon) return; // no usable coords
 
-						// Map elements
-						const line = L.polyline(
-							[
-								[s.lat, s.lon],
-								[d.lat, d.lon],
-							],
-							{
-								color,
-								weight: isVpn ? 2.5 : 1.5,
-								opacity: isVpn ? 0.8 : 0.5,
-								dashArray: isVpn ? '4, 6' : null,
-							},
-						).addTo(map);
-						flowLines.push(line);
+							const isVpn = s.is_vpn || d.is_vpn;
+							const color = isVpn ? COLORS.vpn : COLORS.tcp;
 
-						[s, d].forEach((loc) => {
-							const isV = loc.is_vpn || false;
-							const c = isV ? COLORS.vpn : color;
-							const m = L.circleMarker([loc.lat, loc.lon], {
-								radius: isV ? 6 : 4,
-								fillColor: c,
-								color: isV ? 'rgba(239,68,68,0.3)' : 'rgba(255,255,255,0.1)',
-								weight: isV ? 8 : 4,
-								opacity: isV ? 0.25 : 0.1,
-								fillOpacity: 0.9,
-								className: isV ? 'vpn-marker' : '',
-							}).addTo(map);
-							const vpnTag = isV ? `<span style="color:#ef4444;font-weight:700">⛔ VPN — ${loc.vpn_provider || 'Detected'}</span><br>` : '';
-							m.bindPopup(
-								`<div style="color:#000;font-size:11px;min-width:120px">${vpnTag}<b>${loc.city}, ${loc.country}</b><br>IP: ${loc.ip}<br>${loc.isp ? 'ISP: ' + loc.isp + '<br>' : ''}${loc.asn ? 'ASN: ' + loc.asn : ''}</div>`,
-							);
-							markers.push(m);
-						});
+							// Draw flow line
+							const line = L.polyline(
+								[[sLat, sLon], [dLat, dLon]],
+								{
+									color,
+									weight:    isVpn ? 2.5 : 1.5,
+									opacity:   isVpn ? 0.8 : 0.5,
+									dashArray: isVpn ? '4, 6' : null,
+								},
+							).addTo(map);
+							flowLines.push(line);
 
-						// Sidebar list
-						const item = document.createElement('div');
-						item.className = 'flow-item';
-						if (isVpn) item.style.borderLeft = '3px solid var(--vpn-color)';
-						item.innerHTML = `<div class="flow-ips"><span class="src">${s.ip}${s.is_vpn ? ' 🔒' : ''}</span><span class="dst">→ ${d.ip}${d.is_vpn ? ' 🔒' : ''}</span></div>
-                    <div class="flow-stats">${flow.stats.packet_count} pkts<br>${fmtBytes(flow.stats.total_bytes)}</div>`;
-						item.onclick = () => {
-							map.fitBounds(
-								[
-									[s.lat, s.lon],
-									[d.lat, d.lon],
-								],
-								{ padding: [60, 60] },
-							);
-						};
-						flowListEl.appendChild(item);
+							// Draw endpoint markers
+							[{ loc: s, lat: sLat, lon: sLon }, { loc: d, lat: dLat, lon: dLon }].forEach(({ loc, lat, lon }) => {
+								if (!lat && !lon) return; // skip zero-coord endpoints
+								const isV = loc.is_vpn || false;
+								const c = isV ? COLORS.vpn : color;
+								const m = L.circleMarker([lat, lon], {
+									radius:      isV ? 6 : 4,
+									fillColor:   c,
+									color:       isV ? 'rgba(239,68,68,0.3)' : 'rgba(255,255,255,0.1)',
+									weight:      isV ? 8 : 4,
+									opacity:     isV ? 0.25 : 0.1,
+									fillOpacity: 0.9,
+									className:   isV ? 'vpn-marker' : '',
+								}).addTo(map);
+								const vpnTag = isV
+									? `<span style="color:#ef4444;font-weight:700">⛔ VPN — ${loc.vpn_provider || 'Detected'}</span><br>`
+									: '';
+								m.bindPopup(
+									`<div style="color:#000;font-size:11px;min-width:120px">${vpnTag}<b>${loc.city || '?'}, ${loc.country || '?'}</b><br>IP: ${loc.ip}<br>${loc.isp ? 'ISP: ' + loc.isp + '<br>' : ''}${loc.asn ? 'ASN: ' + loc.asn : ''}</div>`,
+								);
+								markers.push(m);
+								if (lat && lon) validBounds.push([lat, lon]);
+							});
 
-						// VPN tracking
-						if (s.is_vpn) addVpnEntry(s);
-						if (d.is_vpn) addVpnEntry(d);
+							// Sidebar list
+							const item = document.createElement('div');
+							item.className = 'flow-item';
+							if (isVpn) item.style.borderLeft = '3px solid var(--vpn-color)';
+							item.innerHTML = `<div class="flow-ips"><span class="src">${s.ip}${s.is_vpn ? ' 🔒' : ''}</span><span class="dst">→ ${d.ip}${d.is_vpn ? ' 🔒' : ''}</span></div><div class="flow-stats">${flow.stats.packet_count} pkts<br>${fmtBytes(flow.stats.total_bytes)}</div>`;
+							item.onclick = () => {
+								const pts = [[sLat, sLon], [dLat, dLon]].filter(p => p[0] || p[1]);
+								if (pts.length) map.fitBounds(pts, { padding: [60, 60] });
+							};
+							flowListEl.appendChild(item);
+
+							// VPN panel entries
+							if (s.is_vpn) addVpnEntry(s);
+							if (d.is_vpn) addVpnEntry(d);
+						} catch (flowErr) {
+							console.warn(`[loadFlows] Skipped flow #${idx}:`, flowErr);
+						}
 					});
+
+					// Fit map to all rendered flows (only if we have valid coords)
+					if (validBounds.length > 0) {
+						try { map.fitBounds(validBounds, { padding: [40, 40], maxZoom: 8 }); }
+						catch(e) { console.warn('[loadFlows] fitBounds error:', e); }
+					}
 				} catch (e) {
 					showStatus('Error loading flows: ' + e.message, true);
 				}
@@ -2819,6 +2840,30 @@
 				if (pcapMode) loadFlows();
 				else if (liveMode) showStatus('Filters apply on next refresh');
 				else showStatus('Load data first', true);
+			}
+
+			async function clearVpnCache() {
+				try {
+					showStatus('Clearing VPN detection cache…');
+					const res = await fetch('/api/vpn/clear_cache', { method: 'POST' });
+					const d = await res.json();
+					if (d.status === 'cleared') {
+						// Reset frontend VPN state
+						detectedVPNs.clear();
+						document.getElementById('vpnList').innerHTML =
+							'<div class="flow-empty">Cache cleared — reload data to re-evaluate</div>';
+						document.getElementById('vpnBadgeTop').style.display = 'none';
+						document.getElementById('bVpn').textContent = '0';
+						const total = Object.values(d.entries_removed).reduce((a, b) => a + b, 0);
+						showStatus(`✓ Cleared ${total} cached detections — refresh flows to re-evaluate`, false);
+						// Re-run analysis with fresh caches
+						if (pcapMode) { await loadPcapStats(); await loadFlows(); }
+					} else {
+						showStatus('Cache clear failed', true);
+					}
+				} catch (e) {
+					showStatus('Error: ' + e.message, true);
+				}
 			}
 
 			// ================================================================
@@ -3132,8 +3177,9 @@
 					} else if (data.has_parquet) {
 						pcapMode = true;
 						setMode('pcap', 'PCAP Analysis');
-						loadFlows();
-						loadPcapStats();
+						// Sequential: stats first (warms geo/VPN cache), then flows
+						await loadPcapStats();
+						await loadFlows();
 					}
 				} catch (e) {
 					console.error(e);

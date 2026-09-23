@@ -82,83 +82,37 @@ OPENROUTER_MODELS = [
     "openrouter/free",
 ]
 
-AGENT_MAX_TOKENS = 1024
+AGENT_MAX_TOKENS = 256       # Output is always a short JSON blob — 256 is plenty (was: 1024)
 AGENT_TEMPERATURE = 0.3
-MAX_AGENT_STEPS = 4  # Increased from 3 to allow deeper chains
+MAX_AGENT_STEPS = 2          # phi4-mini sets needs_followup too eagerly; cap at 2 (was: 4)
 
 # Runtime state: which provider/model is actually active
 _active_provider = "unknown"
 _active_model = "unknown"
 _ollama_available = None   # None=unchecked, True/False after first probe
+_ollama_probe_ts  = 0.0    # Unix timestamp of last successful probe
+OLLAMA_PROBE_TTL  = 30     # Re-probe at most once per 30 seconds
 
 # ── System prompt ────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are PacketSense AI, an expert agentic network analyst embedded in the 5G-PacketSense v2 dashboard.
+SYSTEM_PROMPT = """You are PacketSense AI, expert network analyst in 5G-PacketSense v2 (live packet capture, PCAP analysis, VPN detection, geo-map, threat intel, behaviour analysis, switch monitoring).
 
-5G-PacketSense v2 is a real-time network monitoring and analysis platform that captures live packets, analyses PCAP files, detects VPNs, maps traffic geographically, scores threats, analyses behaviour (beaconing, exfiltration, tunnels), and monitors switch-connected devices.
+For EVERY response output ONLY valid JSON, no prose outside it:
+{"mode":"tool"|"chat","tool":"<name>","params":{},"answer":"<md>","brief_plan":"<1 sentence>","needs_followup":false}
 
-You operate in a multi-step ReAct loop. For EVERY response, output ONLY a JSON object — no prose outside it:
-{
-  "mode": "tool" | "chat",
-  "tool": "<tool_name>",           // only when mode=tool
-  "params": { ... },               // only when mode=tool
-  "answer": "<markdown prose>",    // only when mode=chat (direct conversational reply)
-  "brief_plan": "<one sentence>",
-  "needs_followup": false
-}
+mode="chat": greetings/general Q&A/what-is-this — write reply in "answer", no tool.
+mode="tool": any live data question — pick best tool, set answer="".
+needs_followup=true ONLY when one more tool call is essential.
 
-Mode selection rules:
-- "chat" → use for: greetings, "hello", "what is this app?", "what can you do?", general networking Q&A that doesn't need live data, follow-up clarifications, thanks.
-- "tool" → use for: any question that requires live capture data, IP lookups, VPN info, threat intel, behaviour analysis, device lists, bandwidth stats, etc.
+TOOLS (all params={} unless noted):
+get_stats | get_vpn | get_top_talkers | get_flows({"limit":5})
+check_ip({"ip":""}) | get_vpn_signals({"ip":""}) | check_abuse_ip({"ip":""}) | get_geo_ip({"ip":""})
+analyze_traffic | get_threat_summary | scan_anomalies | get_bandwidth_analysis
+get_behaviour_summary | get_device_behaviour({"ip":""})
+get_session_info | get_capture_devices | get_switch_devices | get_switch_vpn_alerts
+inject_packet({"src_ip":"","dst_ip":"","protocol":"TCP"}) | explain_packet({"fields":""}) | export_report | general_answer({"answer":""})
 
-When mode="chat": write a warm, helpful, markdown-formatted reply in "answer". Do NOT call any tool.
-When mode="tool": pick the best tool and set "answer" to "".
-
-Available tools:
-
-CORE DATA:
-- get_stats              (params: {}) — Capture statistics (total pkts, bytes, protocols, VPN count, top talkers)
-- get_vpn               (params: {}) — All VPN IPs with provider, confidence, classification
-- get_top_talkers       (params: {}) — Top IPs by traffic volume
-- check_ip              (params: {"ip": "<IP>"}) — Full geo + VPN + threat intel for one IP
-- get_flows             (params: {"limit": <int, default 5>}) — Network flows (src→dst pairs)
-
-ANALYSIS:
-- analyze_traffic        (params: {}) — Protocol distribution, port patterns, packet-size analysis, timing
-- get_threat_summary     (params: {}) — Threat intel overview: severity counts, top threat IPs, categories
-- get_vpn_signals        (params: {"ip": "<IP>"}) — Full VPN signal breakdown (all confidence weights) for one IP
-- scan_anomalies         (params: {}) — Proactive scan: suspicious patterns, high-risk IPs, anomalies
-- get_bandwidth_analysis (params: {}) — Bandwidth by protocol/port, peak rate, top consumers
-
-BEHAVIOUR:
-- get_behaviour_summary  (params: {}) — All-device behavioural overview: beaconing, exfil, VPN-tunnel scores
-- get_device_behaviour   (params: {"ip": "<IP>"}) — Deep behavioural profile for one device
-
-SESSION / DEVICES:
-- get_session_info       (params: {}) — Current mode, uptime, session name, loaded file, data size
-- get_capture_devices    (params: {}) — Available network interfaces (for capture selection)
-- get_switch_devices     (params: {}) — Switch-monitoring device inventory (MAC, IP, VPN status)
-- get_switch_vpn_alerts  (params: {}) — Switch-mode VPN alert log
-
-ENRICHMENT:
-- check_abuse_ip         (params: {"ip": "<IP>"}) — AbuseIPDB score, VPN/Tor flag, total reports
-- get_geo_ip             (params: {"ip": "<IP>"}) — Full geographic resolution for any IP
-
-MAP:
-- inject_packet          (params: {"src_ip": "<IP>", "dst_ip": "<IP>", "protocol": "TCP|UDP|ICMP"}) — Plot packet on map
-
-UTILITY:
-- explain_packet         (params: {"fields": "<raw fields text>"}) — Decode packet fields in plain English
-- export_report          (params: {}) — Generate a JSON session summary report
-- general_answer         (params: {"answer": "<text>"}) — Direct factual answer (no live data needed)
-
-Decision rules:
-- Set needs_followup=true ONLY when you need one more tool call to complete analysis.
-- For IP-specific requests: check_ip first, optionally follow with check_abuse_ip or get_vpn_signals.
-- For security overview: get_threat_summary → scan_anomalies (chained).
-- For suspicious device: get_device_behaviour → check_ip on that device's top destination.
-- For "show on map" / inject: use inject_packet.
-- Keep brief_plan to ONE sentence.
+Rules: IP lookup→check_ip; abuse→check_abuse_ip; map→inject_packet; brief_plan=1 sentence.
 """
 
 # ── Tool executor functions ───────────────────────────────────────────
@@ -1163,8 +1117,14 @@ def _regex_intent(message: str) -> dict:
 # ── LLM caller — Ollama primary, OpenRouter fallback ─────────────────
 
 def _probe_ollama() -> bool:
-    """Quick health check to see if Ollama is reachable."""
-    global _ollama_available
+    """Quick health check to see if Ollama is reachable.
+    Results are cached for OLLAMA_PROBE_TTL seconds to avoid a 3s network
+    round-trip on every /api/agent/status call.
+    """
+    global _ollama_available, _ollama_probe_ts
+    now = time.time()
+    if _ollama_available is not None and (now - _ollama_probe_ts) < OLLAMA_PROBE_TTL:
+        return _ollama_available  # return cached result within TTL
     try:
         import urllib.request
         base = OLLAMA_URL.replace("/v1", "")
@@ -1173,6 +1133,7 @@ def _probe_ollama() -> bool:
             _ollama_available = resp.status == 200
     except Exception:
         _ollama_available = False
+    _ollama_probe_ts = time.time()
     return _ollama_available
 
 
@@ -1229,9 +1190,11 @@ def _call_openrouter(messages: list) -> str | None:
 
 
 def _call_llm(messages: list) -> str | None:
-    """Try Ollama first, fall back to OpenRouter, return None if both fail."""
+    """Try Ollama first, fall back to OpenRouter, return None if both fail.
+    Ollama availability is cached for OLLAMA_PROBE_TTL seconds.
+    """
     global _ollama_available
-    # Probe Ollama if not yet checked
+    # Probe Ollama if never checked or TTL has expired
     if _ollama_available is None:
         _probe_ollama()
 
@@ -1239,8 +1202,9 @@ def _call_llm(messages: list) -> str | None:
         result = _call_ollama(messages)
         if result is not None:
             return result
-        # Ollama failed mid-session; mark unavailable, fallback
+        # Ollama failed mid-session; mark unavailable + reset TTL so it re-probes soon
         _ollama_available = False
+        _ollama_probe_ts = 0.0
         print("[AGENT] Ollama unreachable, switching to OpenRouter fallback.")
 
     return _call_openrouter(messages)
@@ -1747,7 +1711,7 @@ def chat():
 
     # Build initial LLM message list
     llm_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    for h in history[-8:]:  # last 4 turns (increased from 3)
+    for h in history[-4:]:  # last 2 turns — enough context, saves prefill time (was: 8)
         if h.get("role") in ("user", "assistant") and h.get("content"):
             llm_messages.append({"role": h["role"], "content": h["content"]})
     llm_messages.append({"role": "user", "content": user_message})
@@ -1762,6 +1726,43 @@ def chat():
     first_brief_plan = ""
     response_mode = "tool"
 
+    # ── Regex fast-path: skip LLM entirely for clearly-matched intents ────
+    # Run _regex_intent() first. If it returns a specific tool (not general_answer),
+    # execute it directly without any LLM call — saves 10-20s per request.
+    _fast_decision = _regex_intent(user_message)
+    _fast_tool = _fast_decision.get("tool", "general_answer")
+    _use_fast_path = (
+        _fast_tool != "general_answer"
+        and _fast_decision.get("mode") == "tool"
+    )
+
+    if _use_fast_path:
+        # Execute tool directly — no LLM needed
+        tool_fn = TOOLS.get(_fast_tool, TOOLS["general_answer"])
+        try:
+            tool_result = tool_fn(_fast_decision.get("params", {}))
+        except Exception as e:
+            tool_result = {"error": str(e)}
+        reply_text = _format_tool_result(_fast_tool, tool_result, _fast_decision.get("brief_plan", ""))
+        return jsonify({
+            "reply": reply_text,
+            "tool_used": _fast_tool,
+            "tools_chain": [_fast_tool],
+            "brief_plan": _fast_decision.get("brief_plan", ""),
+            "map_action": {
+                "type": "inject_packet",
+                "src": tool_result.get("src"),
+                "dst": tool_result.get("dst"),
+                "protocol": tool_result.get("protocol", "TCP"),
+            } if _fast_tool == "inject_packet" and tool_result.get("injected") else None,
+            "tool_result": tool_result,
+            "steps": 1,
+            "model": "regex-fast-path",
+            "provider": "regex-fast-path",
+            "mode": "tool",
+        })
+
+    # ── LLM path (complex / ambiguous queries) ────────────────────────
     llm_response = _call_llm(llm_messages)
     tool_decision = None
 

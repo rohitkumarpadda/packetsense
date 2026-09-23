@@ -26,34 +26,61 @@ from typing import Optional
 import config
 
 # ── Confidence weights for each detection signal ─────────────────
+#
+# Tier 1 — Near-certain (standalone confirmation → vpn_confirmed ≥ 61):
+#   X4BNet, Tor lists, vpnapi.io, ipinfo.io Tor → score alone crosses threshold
+# Tier 2 — High (61-84, vpn_confirmed with single strong signal):
+#   Known VPN ASN, ipinfo.io VPN, ip-api.com proxy
+# Tier 3 — Likely (36-60, vpn_likely — corroboration needed):
+#   ISP/Org keyword, DB-IP keyword, dual ASN agreement
+# Tier 4 — Suspect (16-35):
+#   Protocol heuristics, AbuseIPDB flags
+# Tier 5 — Insufficient (<16):
+#   Weak corroborating signals
 
 CONFIDENCE_WEIGHTS = {
-    "keyword_match":           35,  # ISP/Org name matched VPN provider
-    "asn_database":            40,  # ASN exclusively owned by VPN provider
-    "ip_range_corroborated":   45,  # IP in VPN list + ISP confirms
-    "ip_range_uncorroborated": 15,  # IP in VPN list but ISP doesn't match
-    "protocol_strong":         20,  # Non-ambiguous VPN port (WireGuard, IPSec)
-    "protocol_weak":           10,  # Ambiguous port (OpenVPN alt, etc.)
+    # ── Tier 1: Near-certain IP list signals ─────────────────────────────────
+    "x4bnet_vpn":              85,  # IP in X4BNet curated VPN list (standalone confirmation)
+    "x4bnet_corroborated":     90,  # X4BNet match + ISP keyword agreement (near-certain)
+    "tor_exit_node":           90,  # Confirmed Tor exit node (was: 50)
+
+    # ── Tier 1: Purpose-built VPN detection API signals ──────────────────────
+    "vpnapi_tor_flag":         90,  # vpnapi.io confirms Tor (was: 55)
+    "vpnapi_vpn_flag":         75,  # vpnapi.io confirms VPN/proxy/relay (was: 45)
+    "vpnapi_proxy_flag":       65,  # vpnapi.io proxy-only flag (was: 40)
+    "ipinfo_tor_flag":         80,  # ipinfo.io privacy.tor confirmed (was: 45)
+
+    # ── Tier 2: High-confidence signals ──────────────────────────────────────
+    "asn_database":            65,  # ASN exclusively owned by VPN provider (was: 40)
+    "ipinfo_vpn_flag":         60,  # ipinfo.io privacy.vpn/proxy confirmed (was: 40)
+    "ipapi_proxy_flag":        50,  # ip-api.com proxy=true flag (was: 35)
+    "ipinfo_relay_flag":       40,  # ipinfo.io privacy.relay (was: 25)
+
+    # ── API consensus bonuses — independent APIs agreeing raises certainty ────
+    "api_consensus_2":         20,  # 2 out of 3 established APIs independently confirm VPN
+    "api_consensus_3":         35,  # All 3 established APIs agree — near-certain
+
+    # ── Tier 3: Likely signals (need corroboration) ───────────────────────────
+    "keyword_match":           35,  # ISP/Org name matched VPN provider keyword
     "dual_asn_agreement":      15,  # Both GeoLite2 and DB-IP agree on VPN org
     "dbip_vpn_keyword":        20,  # DB-IP org name matches VPN provider (GeoLite2 didn't)
-    "tor_exit_node":           50,  # Confirmed Tor exit node
+
+    # ── Tier 4: Suspect signals ───────────────────────────────────────────────
+    "protocol_strong":         20,  # Non-ambiguous VPN port (WireGuard, IPSec)
+    "protocol_weak":           10,  # Ambiguous port (OpenVPN alt, etc.)
     "abuseipdb_vpn_flag":      20,  # AbuseIPDB explicitly marks as VPN/proxy
     "abuseipdb_tor_flag":      25,  # AbuseIPDB marks as Tor
     "abuseipdb_blacklist":     10,  # In AbuseIPDB offline blacklist
     "threat_intel_vpn_corr":   10,  # Threat intel + VPN IP range correlation
-    # ── External established API signals — ELEVATED WEIGHTS ──────────────────────
-    # These are purpose-built VPN/proxy detection APIs with curated databases.
-    # Their positive signals are highly reliable and deserve strong weight.
-    "vpnapi_vpn_flag":         45,  # vpnapi.io confirms VPN/proxy/relay (raised from 30)
-    "vpnapi_tor_flag":         55,  # vpnapi.io confirms Tor (raised from 40)
-    "vpnapi_proxy_flag":       40,  # vpnapi.io proxy-only flag
-    "ipinfo_vpn_flag":         40,  # ipinfo.io privacy.vpn/proxy confirmed (raised from 25)
-    "ipinfo_relay_flag":       25,  # ipinfo.io privacy.relay (raised from 15)
-    "ipinfo_tor_flag":         45,  # ipinfo.io privacy.tor
-    "ipapi_proxy_flag":        35,  # ip-api.com proxy=true flag (raised from 20)
-    # ── API consensus bonuses — when independent APIs agree, confidence is much higher ──
-    "api_consensus_2":         20,  # 2 out of 3 established APIs independently confirm VPN
-    "api_consensus_3":         35,  # All 3 established APIs agree — near-certain
+
+    # ── Tier 5: Legacy/fallback (kept for backward compat, low weight) ────────
+    "ip_range_corroborated":   45,  # Legacy: non-X4BNet list + ISP confirms
+    "ip_range_uncorroborated": 15,  # Legacy: non-X4BNet list, ISP doesn't match
+
+    # ── Relay-only signal — VERY LOW (not a VPN exit node, just a CDN/hosting env) ──
+    # vpnapi.io 'is_relay=True' without 'is_vpn=True': the IP hosts relays (cloud infra).
+    # This CANNOT alone cross the is_vpn threshold (36). Only adds minor suspicion.
+    "vpnapi_relay_only":        5,
 }
 
 
@@ -100,24 +127,55 @@ VPN_PROVIDERS = {
     "iCloud Private Relay": ["apple private relay", "aaplrelay"],
 }
 
-# ── Major CDN/infrastructure ASNs to NEVER flag as VPN ───────────
-# These serve legitimate traffic for a huge percentage of the internet.
+# ── Major CDN/cloud infrastructure ASNs to NEVER flag as VPN ───────────
+# These serve legitimate traffic for the vast majority of the internet.
+# vpnapi.io correctly marks many of these as "relay" (they do host relays)
+# but that is NOT the same as a VPN exit node.
 
 CDN_WHITELIST_ASNS = {
-    "AS13335",   # Cloudflare, Inc. — CDN/DNS (serves ~20% of web traffic)
-    "AS209242",  # Cloudflare WARP uses a distinct ASN sometimes
-    "AS15169",   # Google LLC
-    "AS8075",    # Microsoft Corporation
-    "AS16509",   # Amazon.com (AWS)
-    "AS14618",   # Amazon.com
-    "AS20940",   # Akamai Technologies
-    "AS32934",   # Facebook / Meta
-    "AS8068",    # Microsoft Corporation
-    "AS36459",   # GitHub
-    "AS54113",   # Fastly
-    "AS46489",   # Twitch
-    "AS2906",    # Netflix
+    # Cloudflare
+    "AS13335", "AS209242", "AS132892", "AS395747", "AS133877",
+    # Google / Google Cloud
+    "AS15169", "AS396982", "AS19527", "AS36040", "AS43515",
+    "AS22859", "AS24429", "AS36385", "AS36384", "AS139190",
+    # Microsoft / Azure / Office 365
+    "AS8075", "AS8068", "AS8069", "AS8070", "AS8071",
+    "AS8072", "AS8073", "AS8078", "AS3598",  "AS6182",
+    "AS6194", "AS12222", "AS8067", "AS32475", "AS36375",
+    # Amazon / AWS
+    "AS16509", "AS14618", "AS7224", "AS38895", "AS16604",
+    # Akamai
+    "AS20940", "AS16625", "AS18717", "AS23454", "AS31108",
+    # Fastly
+    "AS54113", "AS394536",
+    # Meta / Facebook
+    "AS32934", "AS63293", "AS54115",
+    # Apple
+    "AS714",  "AS6185",
+    # Netflix
+    "AS2906", "AS40027",
+    # GitHub / Microsoft
+    "AS36459",
+    # Twitch / Amazon
+    "AS46489",
+    # Comcast / ISPs (never VPN ASNs)
+    "AS7922",  "AS7015",
+    # AT&T
+    "AS7018",  "AS20057",
+    # Verizon
+    "AS701",  "AS702",
 }
+
+# ISP/org name fragments for cloud & infrastructure providers.
+# Used as a SECONDARY check when the ASN is not in the list above.
+# Only MAJOR providers whose IPs are overwhelmingly legitimate traffic.
+_CLOUD_ISP_KEYWORDS: frozenset = frozenset([
+    "microsoft", "amazon.com", "google llc", "cloudflare",
+    "fastly", "akamai", "apple inc", "meta platforms",
+    "facebook", "netflix", "twitch", "github",
+    "at&t", "comcast", "verizon", "deutsche telekom",
+    "orange s.a", "vodafone", "bt group", "ntt ",
+])
 
 # ── Layer 2: Known VPN ASN numbers ───────────────────────────────
 
@@ -259,9 +317,22 @@ def _extract_asn_number(asn: str) -> str:
     return asn.split()[0] if asn else ""
 
 
-def _is_cdn_whitelisted(asn: str) -> bool:
-    """Return True if ASN belongs to a major CDN that should never be flagged."""
-    return _extract_asn_number(asn) in CDN_WHITELIST_ASNS
+def _is_cdn_whitelisted(asn: str, isp: str = "") -> bool:
+    """Return True if this IP belongs to a major CDN or cloud infrastructure.
+
+    Two-tier check:
+      1. ASN number exact match against CDN_WHITELIST_ASNS
+      2. ISP/org name substring match against _CLOUD_ISP_KEYWORDS
+         (catches IPs that GeoLite2 assigns to an unlisted Microsoft/AWS ASN)
+    """
+    if _extract_asn_number(asn) in CDN_WHITELIST_ASNS:
+        return True
+    # Secondary: check ISP/org name for known cloud provider names
+    if isp:
+        isp_lower = isp.lower()
+        if any(kw in isp_lower for kw in _CLOUD_ISP_KEYWORDS):
+            return True
+    return False
 
 
 def _check_vpn_keywords(text: str) -> tuple[Optional[str], Optional[str]]:
@@ -308,8 +379,10 @@ def detect_vpn(ip: str, isp: str, asn: str, asn_data: dict = None) -> dict:
     primary_method = None
     primary_detail = None
 
-    # ── CDN whitelist check ──────────────────────────────────
-    is_cdn = _is_cdn_whitelisted(asn)
+    # ── CDN / infrastructure whitelist check ────────────────────
+    # Pass BOTH ASN and ISP so the secondary ISP-keyword check fires for
+    # Microsoft/AWS/Google IPs that GeoLite2 assigns to unlisted ASNs.
+    is_cdn = _is_cdn_whitelisted(asn, isp)
 
     # ── Signal 1: ISP/Org keyword matching ───────────────────
     if not is_cdn:
@@ -399,12 +472,17 @@ def detect_vpn(ip: str, isp: str, asn: str, asn_data: dict = None) -> dict:
                     })
 
     # ── Signal 4: IP range lists (pre-downloaded) ────────────
+    # X4BNet is a maintained, curated VPN IP database — a match alone is
+    # near-certain confirmation regardless of ISP keyword corroboration.
+    # Tor exit nodes are also near-certain by definition.
+    # Other/unknown list sources fall back to legacy corroborated/uncorroborated logic.
     ip_matched, source_label = check_ip_in_vpn_ranges(ip)
     if ip_matched:
         is_tor = "tor" in source_label.lower()
+        is_x4bnet = "x4bnet" in source_label.lower()
 
         if is_tor:
-            weight = CONFIDENCE_WEIGHTS["tor_exit_node"]
+            weight = CONFIDENCE_WEIGHTS["tor_exit_node"]   # 90 pts — near-certain
             confidence += weight
             detected_provider = detected_provider or "Tor"
             detail = f"Confirmed Tor exit node (source: {source_label})"
@@ -417,8 +495,33 @@ def detect_vpn(ip: str, isp: str, asn: str, asn_data: dict = None) -> dict:
                 "detail": detail,
                 "provider": "Tor",
             })
+
+        elif is_x4bnet:
+            # X4BNet is a curated, maintained VPN IP range list.
+            # A match is standalone confirmation — ISP corroboration raises it further.
+            corroborated_provider, _ = _check_vpn_keywords(isp or "")
+            if corroborated_provider:
+                weight = CONFIDENCE_WEIGHTS["x4bnet_corroborated"]  # 90 pts
+                sig_type = "x4bnet_corroborated"
+                detail = f"IP in X4BNet VPN database + ISP '{isp}' confirms {corroborated_provider} (near-certain)"
+                detected_provider = detected_provider or corroborated_provider
+            else:
+                weight = CONFIDENCE_WEIGHTS["x4bnet_vpn"]  # 85 pts — still vpn_confirmed
+                sig_type = "x4bnet_vpn"
+                detail = f"IP in X4BNet curated VPN database (source: {source_label})"
+            confidence += weight
+            if not primary_method:
+                primary_method = "x4bnet"
+                primary_detail = detail
+            signals.append({
+                "type": sig_type,
+                "weight": weight,
+                "detail": detail,
+                "provider": detected_provider,
+            })
+
         else:
-            # Use _check_vpn_keywords for ISP corroboration (no duplicate loop)
+            # Legacy path for any other list source (non-X4BNet, non-Tor)
             corroborated_provider, _ = _check_vpn_keywords(isp or "")
             if corroborated_provider:
                 weight = CONFIDENCE_WEIGHTS["ip_range_corroborated"]
@@ -498,12 +601,16 @@ def detect_vpn(ip: str, isp: str, asn: str, asn_data: dict = None) -> dict:
         except ImportError:
             pass
 
-    # ── Signal 7: External API enrichment ────────────────────────────
-    # All three APIs run in both FAST_MODE and full mode — each has a 24h
-    # per-IP cache so only the very first packet to a new IP makes HTTP calls.
-    # FAST_MODE skips the heavy offline DBs above but keeps all online APIs
-    # for robust VPN detection.
-    if not ip.startswith(("10.", "172.", "192.168.", "127.")):
+    # ── Signal 7: External API enrichment (SKIPPED for CDN/cloud infrastructure) ──
+    # Key principle: vpnapi.io marks cloud provider IPs (Microsoft Azure, AWS,
+    # Google Cloud, Cloudflare, Fastly) as "relay" because they DO host relay
+    # services. This is NOT the same as a VPN exit node. The CDN whitelist gate
+    # below prevents these false positives.
+    #
+    # Relay-only (`is_relay=True`, `is_vpn=False`, `is_proxy=False`) gets a very
+    # small weight because it just means "this IP is in a hosting/CDN network" —
+    # not that the specific IP is a VPN server.
+    if not is_cdn and not ip.startswith(("10.", "172.", "192.168.", "127.")):
         try:
             from services.vpn_api import query_all_vpn_apis
             api_result = query_all_vpn_apis(ip)
@@ -523,28 +630,51 @@ def detect_vpn(ip: str, isp: str, asn: str, asn_data: dict = None) -> dict:
                             signals.append({
                                 "type": "vpnapi_tor_flag",
                                 "weight": weight,
-                                "detail": "vpnapi.io (established API) confirms Tor exit node",
+                                "detail": "vpnapi.io confirms Tor exit node",
                                 "provider": "Tor",
                                 "api": "vpnapi.io",
                             })
                             sig_flagged = True
-                        elif sig.get("is_vpn") or sig.get("is_proxy") or sig.get("is_relay"):
-                            weight = (
-                                CONFIDENCE_WEIGHTS["vpnapi_proxy_flag"]
-                                if sig.get("is_proxy") and not sig.get("is_vpn")
-                                else CONFIDENCE_WEIGHTS["vpnapi_vpn_flag"]
-                            )
+                        elif sig.get("is_vpn"):
+                            # Confirmed VPN exit node — high weight
+                            weight = CONFIDENCE_WEIGHTS["vpnapi_vpn_flag"]
                             confidence += weight
                             provider_hint = sig.get("provider")
                             detected_provider = detected_provider or provider_hint
                             signals.append({
                                 "type": "vpnapi_vpn_flag",
                                 "weight": weight,
-                                "detail": f"vpnapi.io (established API) confirms VPN/proxy/relay — provider: {provider_hint or 'unknown'}",
+                                "detail": f"vpnapi.io confirms VPN exit node — provider: {provider_hint or 'unknown'}",
                                 "provider": provider_hint,
                                 "api": "vpnapi.io",
                             })
                             sig_flagged = True
+                        elif sig.get("is_proxy") and not sig.get("is_relay"):
+                            # Proxy (not just relay) — medium weight
+                            weight = CONFIDENCE_WEIGHTS["vpnapi_proxy_flag"]
+                            confidence += weight
+                            provider_hint = sig.get("provider")
+                            detected_provider = detected_provider or provider_hint
+                            signals.append({
+                                "type": "vpnapi_proxy_flag",
+                                "weight": weight,
+                                "detail": f"vpnapi.io confirms proxy — provider: {provider_hint or 'unknown'}",
+                                "provider": provider_hint,
+                                "api": "vpnapi.io",
+                            })
+                            sig_flagged = True
+                        elif sig.get("is_relay") and not sig.get("is_vpn") and not sig.get("is_proxy"):
+                            # Relay-only — VERY LOW weight: this just means CDN/hosting env.
+                            # Needs at least 3 other non-API signals to reach is_vpn threshold.
+                            weight = CONFIDENCE_WEIGHTS.get("vpnapi_relay_only", 5)
+                            confidence += weight
+                            signals.append({
+                                "type": "vpnapi_relay_only",
+                                "weight": weight,
+                                "detail": "vpnapi.io: relay-only flag (hosting/CDN environment — low confidence)",
+                                "api": "vpnapi.io",
+                            })
+                            # relay-only does NOT count as a positive vote
 
                     elif "ipinfo.io" in source:
                         if sig.get("is_tor"):
@@ -554,18 +684,8 @@ def detect_vpn(ip: str, isp: str, asn: str, asn_data: dict = None) -> dict:
                             signals.append({
                                 "type": "ipinfo_tor_flag",
                                 "weight": weight,
-                                "detail": "ipinfo.io (established API) confirms Tor exit node",
+                                "detail": "ipinfo.io confirms Tor exit node",
                                 "provider": "Tor",
-                                "api": "ipinfo.io",
-                            })
-                            sig_flagged = True
-                        elif sig.get("is_relay"):
-                            weight = CONFIDENCE_WEIGHTS["ipinfo_relay_flag"]
-                            confidence += weight
-                            signals.append({
-                                "type": "ipinfo_relay_flag",
-                                "weight": weight,
-                                "detail": "ipinfo.io (established API) identifies IP as a privacy relay",
                                 "api": "ipinfo.io",
                             })
                             sig_flagged = True
@@ -577,8 +697,19 @@ def detect_vpn(ip: str, isp: str, asn: str, asn_data: dict = None) -> dict:
                             signals.append({
                                 "type": "ipinfo_vpn_flag",
                                 "weight": weight,
-                                "detail": f"ipinfo.io (established API) confirms VPN/proxy — provider: {provider_hint or 'unknown'}",
+                                "detail": f"ipinfo.io confirms VPN/proxy — provider: {provider_hint or 'unknown'}",
                                 "provider": provider_hint,
+                                "api": "ipinfo.io",
+                            })
+                            sig_flagged = True
+                        elif sig.get("is_relay") and not sig.get("is_vpn") and not sig.get("is_proxy"):
+                            # iCloud Private Relay / CDN relay — low but non-zero weight
+                            weight = CONFIDENCE_WEIGHTS["ipinfo_relay_flag"]
+                            confidence += weight
+                            signals.append({
+                                "type": "ipinfo_relay_flag",
+                                "weight": weight,
+                                "detail": "ipinfo.io: privacy relay flag (e.g. iCloud Private Relay)",
                                 "api": "ipinfo.io",
                             })
                             sig_flagged = True
@@ -592,7 +723,7 @@ def detect_vpn(ip: str, isp: str, asn: str, asn_data: dict = None) -> dict:
                             signals.append({
                                 "type": "ipapi_proxy_flag",
                                 "weight": weight,
-                                "detail": f"ip-api.com (established API) proxy=true — org: {provider_hint or 'unknown'}",
+                                "detail": f"ip-api.com proxy=true — org: {provider_hint or 'unknown'}",
                                 "api": "ip-api.com",
                             })
                             sig_flagged = True

@@ -1,0 +1,125 @@
+# Agent Panel Fix + LLM Speed Optimization
+
+## Problem 1: Agent Panel Clipped by Navbar (UI — implement now)
+
+The `.agent-panel` is positioned `bottom: calc(var(--bottombar-h) + 76px)` with a fixed height of `560px`. On smaller viewport heights, the panel's **top edge extends behind the 52px topbar** (`z-index: 100`), making the header unclickable and chat partially obscured.
+
+### Fix
+- Cap the panel height using `max-height: calc(100vh - var(--topbar-h) - var(--bottombar-h) - 96px)` so it can never overflow the topbar.
+- Also ensure the panel can never go `top < topbar-h` by capping with `max-height` and letting it grow downward from a fixed bottom anchor.
+
+**File:** [`static/index.html`](file:///c:/Users/rohit/5G-PacketSense-v2/5G-PacketSense-v2/static/index.html) — change `.agent-panel` CSS (~line 910–928).
+
+---
+
+## Problem 2: 20–30s Response Latency (plan only, don't implement yet)
+
+### Root cause analysis
+
+The current flow for every user message is:
+
+```
+User message
+  → _call_llm() [LLM call #1: intent classification + tool selection]
+      - Sends full SYSTEM_PROMPT (1600+ tokens) + up to 8 history messages + user message
+      - phi4-mini over SSH tunnel ← latency hotspot
+  → tool execution (fast, in-process Python)
+  → if needs_followup: _call_llm() [LLM call #2]  ← second full round-trip
+  → _format_tool_result() (fast)
+  → Response
+```
+
+**The bottleneck is the LLM itself** — phi4-mini is a 3.8B model running on CPU (or low VRAM) over an SSH tunnel, and the system prompt alone is ~1600 tokens. Each round-trip costs ~10–20s.
+
+---
+
+### Proposed Optimizations
+
+#### 1. Compress the system prompt (saves ~30–40% prompt tokens → ~4–8s faster)
+
+The current `SYSTEM_PROMPT` in [`routes/agent.py`](file:///c:/Users/rohit/5G-PacketSense-v2/5G-PacketSense-v2/routes/agent.py#L96-L162) is ~1,650 tokens. It repeats the tool list in verbose form.
+
+**Plan:** Rewrite as a dense, abbreviated prompt using shorthand:
+- Replace long tool descriptions with one-liner tool signatures
+- Remove verbose examples, replace with a compact decision table
+- Target: reduce to ~600–700 tokens (saves ~1,000 tokens per call)
+
+**File:** [`routes/agent.py`](file:///c:/Users/rohit/5G-PacketSense-v2/5G-PacketSense-v2/routes/agent.py) — rewrite `SYSTEM_PROMPT` constant.
+
+---
+
+#### 2. Reduce `AGENT_MAX_TOKENS` (saves ~2–5s on generation)
+
+Currently `AGENT_MAX_TOKENS = 1024`. The agent output is always a compact JSON blob — rarely more than 80–120 tokens. Capping at 256 will cut generation time significantly without losing any information.
+
+**Plan:** Change `AGENT_MAX_TOKENS = 1024` → `AGENT_MAX_TOKENS = 256`
+
+**File:** [`routes/agent.py`](file:///c:/Users/rohit/5G-PacketSense-v2/5G-PacketSense-v2/routes/agent.py#L85)
+
+---
+
+#### 3. Reduce history window (saves ~2–3s on prefill)
+
+Currently sends last 8 history messages (`history[-8:]`). For a chat assistant with short tool queries, 4 messages (2 turns) is plenty.
+
+**Plan:** Change `history[-8:]` → `history[-4:]`
+
+**File:** [`routes/agent.py`](file:///c:/Users/rohit/5G-PacketSense-v2/5G-PacketSense-v2/routes/agent.py#L1750)
+
+---
+
+#### 4. Regex fast-path for common queries (saves full LLM call for ~40% of queries)
+
+The app already has `_regex_intent()` as fallback. Promote it to a **pre-LLM fast path** for clearly-matched intents (stats, vpn, talkers, etc.). Only call LLM when regex doesn't match with high confidence.
+
+**Plan:** In the `chat()` endpoint, run `_regex_intent()` first. If it returns a high-confidence result (non-general_answer tool), skip the LLM call entirely and execute the tool directly.
+
+**File:** [`routes/agent.py`](file:///c:/Users/rohit/5G-PacketSense-v2/5G-PacketSense-v2/routes/agent.py#L1765) — modify `chat()` function.
+
+---
+
+#### 5. Cache `_ollama_available` with TTL instead of per-request probe (saves ~3s on cold start)
+
+`_probe_ollama()` is called on every `/api/agent/status` request and once on first chat. The probe does a network request (3s timeout). Add a TTL cache so it's only re-probed every 30 seconds.
+
+**Plan:** Add `_ollama_probe_ts = 0` and `OLLAMA_PROBE_TTL = 30`. In `_call_llm()`, only re-probe if `time.time() - _ollama_probe_ts > OLLAMA_PROBE_TTL`.
+
+**File:** [`routes/agent.py`](file:///c:/Users/rohit/5G-PacketSense-v2/5G-PacketSense-v2/routes/agent.py#L1163-L1176) — modify `_probe_ollama()` and `_call_llm()`.
+
+---
+
+#### 6. Remove `MAX_AGENT_STEPS` multi-step for simple queries (saves 1 extra LLM call when `needs_followup=true`)
+
+phi4-mini tends to set `needs_followup=true` eagerly, triggering a second LLM call unnecessarily. Cap at `MAX_AGENT_STEPS = 2` (from 4) for phi-sized models and only chain when the user explicitly asks for deep analysis.
+
+**Plan:** Change `MAX_AGENT_STEPS = 4` → `MAX_AGENT_STEPS = 2`
+
+**File:** [`routes/agent.py`](file:///c:/Users/rohit/5G-PacketSense-v2/5G-PacketSense-v2/routes/agent.py#L87)
+
+---
+
+### Expected end-to-end improvement
+
+| Optimization | Estimated saving |
+|---|---|
+| Compress system prompt | 4–8s |
+| Reduce max_tokens 1024→256 | 2–5s |
+| Reduce history window | 1–3s |
+| Regex fast-path (when matched) | 10–20s (skips LLM entirely) |
+| Ollama probe TTL cache | 0–3s |
+| Reduce MAX_AGENT_STEPS 4→2 | 0–15s (when followup triggered) |
+
+**Total: 7–54s savings depending on query type. Simple queries (stats, vpn, talkers) should drop to ~2–4s via regex fast-path.**
+
+---
+
+## Verification Plan
+
+### UI Fix
+- Open app, click Agent button — panel should not be clipped by navbar at any browser window size
+- Resize browser to small viewport — panel should shrink, not overflow topbar
+
+### LLM Speed (post-implementation)
+- Time 5 queries before and after changes using browser DevTools Network tab
+- Verify regex fast-path triggers for: "show stats", "show vpn", "top talkers"
+- Verify LLM path still works for complex queries: "check ip 8.8.8.8", "scan anomalies"

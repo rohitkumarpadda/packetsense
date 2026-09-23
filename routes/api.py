@@ -277,6 +277,26 @@ def get_flows():
     sql += f" GROUP BY src_ip, dst_ip HAVING COUNT(*) >= {min_pkts}"
     sql += f" ORDER BY packet_count DESC LIMIT {limit}"
 
+    def _safe_geo(geo: dict, ip: str) -> dict:
+        """Return only the fields the map frontend needs — no vpn_signals list,
+        no asn_data dict, no non-serialisable objects."""
+        return {
+            "ip":                 ip,
+            "lat":                geo.get("lat") or 0,
+            "lon":                geo.get("lon") or 0,
+            "city":               geo.get("city") or "Unknown",
+            "country":            geo.get("country") or "Unknown",
+            "isp":                geo.get("isp") or "",
+            "asn":                geo.get("asn") or "",
+            "is_private":         bool(geo.get("is_private")),
+            "is_vpn":             bool(geo.get("is_vpn")),
+            "vpn_provider":       geo.get("vpn_provider"),
+            "vpn_method":         geo.get("vpn_method"),
+            "vpn_method_detail":  geo.get("vpn_method_detail") or "",
+            "vpn_confidence":     geo.get("vpn_confidence") or 0,
+            "vpn_classification": geo.get("vpn_classification") or "not_vpn",
+        }
+
     try:
         rows = config.conn.execute(sql).fetchall()
         flows, skipped = [], 0
@@ -286,19 +306,30 @@ def get_flows():
             if not src_geo or not dst_geo:
                 skipped += 1
                 continue
+
+            # Skip flows where BOTH endpoints lack usable coordinates.
+            # ASN-only-resolved IPs get lat=0, lon=0 (null island, off Africa)
+            # which are invisible to users not looking at that location.
+            src_has_coords = bool(src_geo.get("lat") or src_geo.get("lon"))
+            dst_has_coords = bool(dst_geo.get("lat") or dst_geo.get("lon"))
+            if not src_has_coords and not dst_has_coords:
+                skipped += 1
+                continue
+
             flows.append(
                 {
-                    "src": {"ip": src_ip, **src_geo},
-                    "dst": {"ip": dst_ip, **dst_geo},
+                    "src":   _safe_geo(src_geo, src_ip),
+                    "dst":   _safe_geo(dst_geo, dst_ip),
                     "stats": {
-                        "packet_count": int(pkt_count),
-                        "total_bytes": int(total_bytes or 0),
+                        "packet_count":    int(pkt_count),
+                        "total_bytes":     int(total_bytes or 0),
                         "avg_packet_size": float(avg_size or 0),
                     },
                 }
             )
         return jsonify({"flows": flows, "total": len(flows), "skipped": skipped})
     except Exception as e:
+        import traceback; traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 
@@ -308,12 +339,12 @@ def get_stats():
         return jsonify({"error": "No PCAP loaded"}), 400
     C = config.COLS
     try:
-        total = config.conn.execute("SELECT COUNT(*) FROM packets").fetchone()[0]
+        total = config.conn.execute("SELECT COUNT(*) FROM packets").fetchone()[0] or 0
         u_src = config.conn.execute(
-            f"SELECT COUNT(DISTINCT {C['src']}) FROM packets"
+            f"SELECT COALESCE(COUNT(DISTINCT {C['src']}), 0) FROM packets"
         ).fetchone()[0]
         u_dst = config.conn.execute(
-            f"SELECT COUNT(DISTINCT {C['dst']}) FROM packets"
+            f"SELECT COALESCE(COUNT(DISTINCT {C['dst']}), 0) FROM packets"
         ).fetchone()[0]
 
         protos = config.conn.execute(
@@ -375,14 +406,23 @@ def get_stats():
                 unknown_locs += 1
             elif geo.get("is_vpn"):
                 vpn_count += 1
+                # Field names must match what addVpnEntry() in the frontend expects:
+                #   loc.vpn_provider, loc.vpn_method, loc.vpn_method_detail,
+                #   loc.ip, loc.city, loc.country, loc.isp, loc.asn
                 vpn_details.append(
                     {
-                        "ip": ip,
-                        "provider": geo.get("vpn_provider", "Unknown"),
-                        "isp": geo.get("isp", "Unknown"),
+                        "ip":               ip,
+                        "vpn_provider":     geo.get("vpn_provider") or "Unknown",
+                        "vpn_method":       geo.get("vpn_method") or "keyword",
+                        "vpn_method_detail": geo.get("vpn_method_detail", ""),
+                        "vpn_confidence":   geo.get("vpn_confidence", 0),
+                        "vpn_classification": geo.get("vpn_classification", "vpn_confirmed"),
+                        "isp":     geo.get("isp", "Unknown"),
+                        "asn":     geo.get("asn", ""),
                         "country": geo.get("country", "Unknown"),
-                        "city": geo.get("city", "Unknown"),
-                        "method": geo.get("vpn_method", "keyword"),
+                        "city":    geo.get("city", "Unknown"),
+                        "lat":     geo.get("lat", 0),
+                        "lon":     geo.get("lon", 0),
                     }
                 )
 
@@ -676,6 +716,35 @@ def refresh_vpn_db():
         )
     except Exception as e:
         return jsonify({"status": "error", "message": str(e)}), 500
+
+
+@api.route("/api/vpn/clear_cache", methods=["POST"])
+def clear_vpn_cache():
+    """Flush all VPN detection caches so IPs are re-evaluated on next access.
+
+    Use this after a configuration change (e.g. whitelist expansion) to clear
+    stale false-positive results without restarting the server.
+    """
+    cleared = {
+        "VPN_CACHE":      len(config.VPN_CACHE),
+        "GEOIP_CACHE":    len(config.GEOIP_CACHE),
+        "VPN_API_CACHE":  len(config.VPN_API_CACHE),
+        "VPNAPI_IO_CACHE": len(config.VPNAPI_IO_CACHE),
+        "IPINFO_CACHE":   len(config.IPINFO_CACHE),
+        "IPAPI_CACHE":    len(config.IPAPI_CACHE),
+    }
+    config.VPN_CACHE.clear()
+    config.GEOIP_CACHE.clear()
+    config.VPN_API_CACHE.clear()
+    config.VPNAPI_IO_CACHE.clear()
+    config.IPINFO_CACHE.clear()
+    config.IPAPI_CACHE.clear()
+    config.vpn_ips.clear()
+    # Reset live stats VPN tracking too
+    config.live_stats["vpn_ips"].clear()
+    config.live_stats["vpn_details"].clear()
+    print("[VPN] All detection caches cleared")
+    return jsonify({"status": "cleared", "entries_removed": cleared})
 
 
 # ── Threat Intelligence ───────────────────────────────────────────

@@ -41,18 +41,21 @@ def _flush_emit_buffer():
     _emit_buffer = []
     _emit_timer = None
     
-    # Emit each packet individually with proper app context
+    # Emit each packet individually with proper app context.
+    # flask-socketio v5+: socketio.emit() without 'to=' broadcasts to all clients.
+    # The old 'broadcast=True' kwarg was removed in v5.
     try:
         if app:
             with app.app_context():
                 for pkt_data in batch:
-                    socketio.emit(pkt_data["event"], pkt_data["data"], broadcast=True)
-                print(f"[SocketIO] Emitted {batch_len} packets to frontend")
+                    socketio.emit(pkt_data["event"], pkt_data["data"])
+                if batch_len > 0:
+                    print(f"[SocketIO] Emitted {batch_len} packets to all clients")
         else:
-            print("[WARN] Flask app context not available, attempting emit anyway")
+            # Attempt without app context (may still work depending on SocketIO setup)
             for pkt_data in batch:
-                socketio.emit(pkt_data["event"], pkt_data["data"], broadcast=True)
-            print(f"[SocketIO] Emitted {batch_len} packets to frontend (no context)")
+                socketio.emit(pkt_data["event"], pkt_data["data"])
+            print(f"[SocketIO] Emitted {batch_len} packets (no app context)")
     except Exception as e:
         print(f"[ERROR] Failed to emit {batch_len} packets: {e}")
         import traceback
@@ -574,47 +577,39 @@ def switch_packet_callback(packet):
         ext["packets"] += 1
         ext["bytes"] += pkt_size
 
-    # VPN detection
+    # VPN detection — resolve external IP once and reuse throughout
     vpn_hints = detect_vpn_protocol_heuristic(packet, src_port, dst_port, protocol)
     vpn_by_ip = False
     vpn_provider = vpn_method = None
     vpn_confidence = 0
     vpn_classification = "not_vpn"
     threat_info = None
+    ext_loc = None  # resolved once below; reused by emit + explanation
 
     if not is_private_ip(external_ip):
-        ext_loc = resolve_ip(external_ip)
+        ext_loc = resolve_ip(external_ip)   # also populates GEOIP_CACHE
         if ext_loc and ext_loc.get("is_vpn"):
             vpn_by_ip = True
-            vpn_provider = ext_loc.get("vpn_provider", "Unknown VPN")
-            vpn_method = ext_loc.get("vpn_method", "ip_lookup")
-            vpn_confidence = ext_loc.get("vpn_confidence", 0)
+            vpn_provider = ext_loc.get("vpn_provider") or "Unknown VPN"
+            vpn_method   = ext_loc.get("vpn_method")   or "ip_lookup"
+            vpn_confidence    = ext_loc.get("vpn_confidence", 0)
             vpn_classification = ext_loc.get("vpn_classification", "not_vpn")
 
-        # Offline threat intelligence check
-        threat_info = check_ip_reputation(external_ip)
+        # Offline threat intelligence check (skipped in FAST_MODE)
+        if not config.FAST_MODE:
+            threat_info = check_ip_reputation(external_ip)
 
     is_vpn_traffic = vpn_by_ip or len(vpn_hints) > 0
 
     if is_vpn_traffic:
         _record_switch_vpn(
-            internal_ip,
-            external_ip,
-            dst_port,
-            protocol,
-            pkt_size,
-            now,
-            vpn_by_ip,
-            vpn_provider,
-            vpn_method,
-            vpn_hints,
-            direction,
+            internal_ip, external_ip, dst_port, protocol, pkt_size, now,
+            vpn_by_ip, vpn_provider, vpn_method, vpn_hints, direction,
         )
 
-    # Build VPN explanation for switch mode
+    # Build VPN explanation — reuse already-resolved ext_loc
     vpn_explanation = None
-    if vpn_by_ip and not is_private_ip(external_ip):
-        ext_loc = config.GEOIP_CACHE.get(external_ip)
+    if vpn_by_ip and ext_loc:
         vpn_explanation = _build_vpn_explanation(external_ip, ext_loc, vpn_hints)
     elif vpn_hints:
         vpn_explanation = {"ip": external_ip, "provider": vpn_hints[0]["protocol_hint"],
@@ -622,9 +617,9 @@ def switch_packet_callback(packet):
                           "method_label": f"VPN protocol detected on port {vpn_hints[0]['port']}",
                           "protocol_hints": vpn_hints}
 
-    # AbuseIPDB enrichment (optional)
+    # AbuseIPDB enrichment (skipped in FAST_MODE, consistent with local capture)
     abuseipdb_info = None
-    if not is_private_ip(external_ip):
+    if not config.FAST_MODE and not is_private_ip(external_ip):
         try:
             from services.abuseipdb import check_ip_abuseipdb
             abuseipdb_info = check_ip_abuseipdb(external_ip)
@@ -844,15 +839,23 @@ def _track_vpn(src_ip, dst_ip, src_loc, dst_loc) -> bool:
             stats["vpn_ips"].add(ip)
             config.vpn_ips.add(ip)
             if ip not in stats["vpn_details"]:
+                # Field names match addVpnEntry() in the frontend:
+                # loc.vpn_provider, loc.vpn_method, loc.vpn_method_detail
                 stats["vpn_details"][ip] = {
-                    "ip": ip,
-                    "provider": loc.get("vpn_provider", "Unknown"),
-                    "isp": loc.get("isp", "Unknown"),
+                    "ip":                ip,
+                    "vpn_provider":      loc.get("vpn_provider") or "Unknown",
+                    "vpn_method":        loc.get("vpn_method") or "keyword",
+                    "vpn_method_detail": loc.get("vpn_method_detail", ""),
+                    "vpn_confidence":    loc.get("vpn_confidence", 0),
+                    "vpn_classification": loc.get("vpn_classification", "vpn_confirmed"),
+                    "isp":     loc.get("isp", "Unknown"),
+                    "asn":     loc.get("asn", ""),
                     "country": loc.get("country", "Unknown"),
-                    "city": loc.get("city", "Unknown"),
+                    "city":    loc.get("city", "Unknown"),
+                    "lat":     loc.get("lat", 0),
+                    "lon":     loc.get("lon", 0),
                     "direction": direction,
-                    "peer_ip": peer_ip,
-                    "method": loc.get("vpn_method", "keyword"),
+                    "peer_ip":   peer_ip,
                 }
     return vpn_detected
 

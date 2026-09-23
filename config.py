@@ -33,7 +33,7 @@ MAX_HISTORY = 5000       # 16GB RAM machine — keep 5× more packet history
 #   - Behavioural analysis engine (beaconing, exfil, tunnel)
 # Only kept: MMDB geo, keyword/ASN VPN detection, X4BNet/Tor IP ranges, protocol heuristics.
 # Enable this on low-spec hardware or high-traffic interfaces.
-FAST_MODE = False  # Toggle False to re-enable full analysis pipeline
+FAST_MODE = True  # Toggle False to re-enable full analysis pipeline
 
 
 # ── Offline user location (used in switch mode when no internet) ─

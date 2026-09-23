@@ -36,11 +36,25 @@ def _is_non_routable(ip_str: str) -> bool:
         return True
 
 
+_NEGATIVE_TTL = 300   # Cache negative (failed) results for 5 minutes
+_POSITIVE_TTL = 86400 # Cache positive (successful) results for 24 hours
+
+
 def _get_cached(cache: dict, ip: str) -> Optional[dict]:
-    """Return a cached result if it exists and is < 24 hours old."""
+    """Return a cached result if it is still within its TTL.
+
+    Positive results (available=True)  → 24 h TTL
+    Negative results (available=False) → 5 min TTL (retry after a while)
+    """
     entry = cache.get(ip)
-    if entry and time.time() - entry.get("_cached_at", 0) < 86400:
+    if not entry:
+        return None
+    age = time.time() - entry.get("_cached_at", 0)
+    ttl = _POSITIVE_TTL if entry.get("available") else _NEGATIVE_TTL
+    if age < ttl:
         return entry
+    # Expired — remove stale entry
+    cache.pop(ip, None)
     return None
 
 
@@ -128,7 +142,10 @@ def query_vpnapi_io(ip: str) -> dict:
     except Exception as exc:
         print(f"[VPN-API] vpnapi.io error for {ip}: {exc}")
 
-    return _empty(source)
+    # Cache the empty result with a short TTL so we don't retry on every packet
+    empty = _empty(source)
+    _store_cached(config.VPNAPI_IO_CACHE, ip, empty)
+    return empty
 
 
 # ── 2. ipinfo.io ────────────────────────────────────────────────────
@@ -189,7 +206,11 @@ def query_ipinfo(ip: str) -> dict:
     except Exception as exc:
         print(f"[VPN-API] ipinfo.io error for {ip}: {exc}")
 
-    return _empty(source)
+    # Cache the empty result so we don’t retry on the next packet
+    empty = _empty(source)
+    config.evict_cache_if_needed(config.IPINFO_CACHE, config.IPINFO_CACHE_MAX, "IPINFO_CACHE")
+    _store_cached(config.IPINFO_CACHE, ip, empty)
+    return empty
 
 
 # ── 3. ip-api.com ───────────────────────────────────────────────────
@@ -254,7 +275,11 @@ def query_ip_api(ip: str) -> dict:
     except Exception as exc:
         print(f"[VPN-API] ip-api.com error for {ip}: {exc}")
 
-    return _empty(source)
+    # Cache the empty result so we don’t retry on the next packet for this IP
+    empty = _empty(source)
+    config.evict_cache_if_needed(config.IPAPI_CACHE, config.IPAPI_CACHE_MAX, "IPAPI_CACHE")
+    _store_cached(config.IPAPI_CACHE, ip, empty)
+    return empty
 
 
 # ── Aggregated query (all three APIs) ──────────────────────────────
