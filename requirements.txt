@@ -1,4 +1,4 @@
-# 5G-PacketSense Integrated - Requirements
+# VPN-PacketSense Integrated - Requirements
 # Install with: pip install -r requirements.txt
 
 # ── Web Framework ──────────────────────────────────────────

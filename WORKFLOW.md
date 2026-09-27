@@ -1,4 +1,4 @@
-# 5G-PacketSense v2 — System Workflow & Architecture
+# VPN-PacketSense v2 — System Workflow & Architecture
 
 This document explains how data flows through the system, how each analysis engine works, and how the AI agent reasons about your network traffic.
 
@@ -14,7 +14,7 @@ This document explains how data flows through the system, how each analysis engi
 6. [Threat Intelligence Engine](#6-threat-intelligence-engine)
 7. [Behavioural Analysis Engine](#7-behavioural-analysis-engine)
 8. [Geolocation Pipeline](#8-geolocation-pipeline)
-9. [AI Agent (PacketSense AI)](#9-ai-agent-packetsense-ai)
+9. [AI Agent (VPN-PacketSense AI)](#9-ai-agent-vpn-packetsense-ai)
 10. [Frontend & Real-Time Updates](#10-frontend--real-time-updates)
 
 ---
@@ -314,7 +314,7 @@ For **switch mode** or when the user's own public IP can't be determined, `USER_
 
 ---
 
-## 9. AI Agent (PacketSense AI)
+## 9. AI Agent (VPN-PacketSense AI)
 
 `routes/agent.py` — a multi-step **ReAct** (Reason + Act) agent backed by OpenRouter free models.
 

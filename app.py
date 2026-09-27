@@ -1,5 +1,5 @@
 """
-5G-PacketSense v2 — Unified Network Analysis Platform.
+VPN-PacketSense v2 — Unified Network Analysis Platform.
 
 Slim application entry point. Creates the Flask app, registers
 blueprints, initializes SocketIO, and starts the server.
@@ -49,7 +49,7 @@ set_socketio(socketio, app)
 
 if __name__ == "__main__":
     print("=" * 70)
-    print("5G-PacketSense v2 - Unified Network Analysis Platform")
+    print("VPN-PacketSense v2 - Unified Network Analysis Platform")
     print("=" * 70)
     print("\nFeatures:")
     print("  [+] PCAP file analysis with DuckDB")

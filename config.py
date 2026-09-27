@@ -1,5 +1,5 @@
 """
-5G-PacketSense v2 — Centralized configuration and shared state.
+VPN-PacketSense v2 — Centralized configuration and shared state.
 
 All mutable runtime state (caches, stats, device tracking) lives here
 so every module imports from one place instead of juggling globals.
@@ -48,8 +48,8 @@ OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
 
 # Ollama (local or SSH-tunnelled remote instance)
 OLLAMA_URL = os.getenv("OLLAMA_URL", "http://localhost:11434/v1")
-OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
-OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "60"))  # seconds
+OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "phi4-mini")
+OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "120"))  # seconds
 
 # ── DuckDB Column Mapping ────────────────────────────────────────
 COLS = {

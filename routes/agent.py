@@ -71,9 +71,9 @@ agent_bp = Blueprint("agent", __name__)
 
 # Ollama is tried first (SSH-tunnelled from remote laptop).
 # OpenRouter free slugs are used as fallback.
-OLLAMA_MODEL_NAME = getattr(config, "OLLAMA_MODEL", "qwen2.5:7b")
+OLLAMA_MODEL_NAME = getattr(config, "OLLAMA_MODEL", "phi4-mini")
 OLLAMA_URL = getattr(config, "OLLAMA_URL", "http://localhost:11434/v1")
-OLLAMA_TIMEOUT = getattr(config, "OLLAMA_TIMEOUT", 60)
+OLLAMA_TIMEOUT = getattr(config, "OLLAMA_TIMEOUT", 120)
 
 OPENROUTER_MODELS = [
     "nvidia/nemotron-3.5-lightning:free",
@@ -95,7 +95,7 @@ OLLAMA_PROBE_TTL  = 30     # Re-probe at most once per 30 seconds
 
 # ── System prompt ────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are PacketSense AI, expert network analyst in 5G-PacketSense v2 (live packet capture, PCAP analysis, VPN detection, geo-map, threat intel, behaviour analysis, switch monitoring).
+SYSTEM_PROMPT = """You are VPN-PacketSense AI, expert network analyst in VPN-PacketSense v2 (live packet capture, PCAP analysis, VPN detection, geo-map, threat intel, behaviour analysis, switch monitoring).
 
 For EVERY response output ONLY valid JSON, no prose outside it:
 {"mode":"tool"|"chat","tool":"<name>","params":{},"answer":"<md>","brief_plan":"<1 sentence>","needs_followup":false}
@@ -1089,8 +1089,8 @@ def _regex_intent(message: str) -> dict:
             "tool": "general_answer",
             "params": {},
             "answer": (
-                " Hi! I'm **PacketSense AI** — your intelligent network analyst.\n\n"
-                "I'm embedded in **5G-PacketSense v2**, a platform for real-time packet capture, "
+                " Hi! I'm **VPN-PacketSense AI** — your intelligent network analyst.\n\n"
+                "I'm embedded in **VPN-PacketSense v2**, a platform for real-time packet capture, "
                 "PCAP analysis, VPN detection, threat intelligence, and network behaviour analysis.\n\n"
                 "Here's what I can do for you:\n"
                 "- [DATA] **Traffic analysis** — protocols, ports, packet sizes\n"
@@ -1175,7 +1175,7 @@ def _call_openrouter(messages: list) -> str | None:
                     temperature=AGENT_TEMPERATURE,
                     extra_headers={
                         "HTTP-Referer": "http://localhost:5000",
-                        "X-Title": "5G-PacketSense Agent",
+                        "X-Title": "VPN-PacketSense Agent",
                     },
                 )
                 _active_provider = "openrouter"
@@ -1219,8 +1219,8 @@ def _call_llm_chat(messages: list) -> str | None:
         {
             "role": "system",
             "content": (
-                "You are PacketSense AI, a friendly and expert network security assistant "
-                "embedded in the 5G-PacketSense v2 dashboard — a real-time network monitoring, "
+                "You are VPN-PacketSense AI, a friendly and expert network security assistant "
+                "embedded in the VPN-PacketSense v2 dashboard — a real-time network monitoring, "
                 "VPN detection, threat intelligence, and behavioural analysis platform. "
                 "Reply in markdown. Be concise, warm, and informative. "
                 "If the user asks what the app does, explain it clearly."

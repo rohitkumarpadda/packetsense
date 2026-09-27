@@ -184,7 +184,7 @@ def download_all():
 
 
 if __name__ == "__main__":
-    print("5G-PacketSense v2 — Threat Intelligence Database Updater")
+    print("VPN-PacketSense v2 — Threat Intelligence Database Updater")
     print("This script downloads all databases needed for offline operation.\n")
 
     success = download_all()

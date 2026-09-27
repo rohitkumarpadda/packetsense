@@ -194,7 +194,7 @@ class LLMClient:
         self, nl_query: str, schema: str, custom_instructions: str = ""
     ) -> str:
         """Build the prompt for SQL translation."""
-        return f"""You are a SQL query generator for 5G packet capture data stored in DuckDB.
+        return f"""You are a SQL query generator for VPN packet capture data stored in DuckDB.
 
 Database Schema:
 {schema}
