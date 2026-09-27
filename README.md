@@ -38,7 +38,6 @@ VPN-PacketSense v2 is a self-hosted network observability, packet analysis, and 
 - [REST API Reference](#rest-api-reference)
 - [WebSocket Telemetry](#websocket-telemetry)
 - [AI Agent Tools](#ai-agent-tools)
-- [Test Suite](#test-suite)
 - [Troubleshooting](#troubleshooting)
 - [License](#license)
 
@@ -149,14 +148,6 @@ VPN-PacketSense-v2/
 |
 |-- static/
 |   `-- index.html              # Cyber-themed frontend (Leaflet.js + Vanilla JS)
-|
-|-- tests/
-|   |-- __init__.py
-|   |-- test_api_routes.py      # Comprehensive 75-test REST API suite
-|   |-- test_config.py          # Configuration and cache eviction unit tests
-|   |-- test_offline_databases.py # MMDB and blocklist file validation tests
-|   |-- test_v1_vs_v2.py        # Parity tests between v1 and v2 engines
-|   `-- test_vpn_risk.py        # VPN detection and risk scoring test suite
 |
 `-- data/                       # Local data directory (runtime generated / downloaded)
     |-- parquet/                # Ingested Parquet files for DuckDB querying
@@ -591,19 +582,6 @@ The embedded ReAct agent in `routes/agent.py` can invoke 22 distinct tools durin
 | `explain_packet` | `{"fields": "..."}` | Explains raw packet headers and flags in plain English. |
 | `export_report` | None | Generates an executive security assessment summary. |
 | `general_answer` | `{"answer": "..."}` | Delivers direct factual answers without running tool executions. |
-
----
-
-## Test Suite
-
-The project includes an automated test suite verifying REST API routes, parameter handling, error conditions, and empty-state fallbacks.
-
-Run the test suite:
-```bash
-python -m unittest tests/test_api_routes.py
-```
-
-All 75 test cases execute against the Flask test client without requiring live hardware capture interfaces.
 
 ---
 
