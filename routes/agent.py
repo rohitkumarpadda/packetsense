@@ -56,6 +56,9 @@ Fallback: regex-intent matcher handles common questions when LLM unavailable.
 import json
 import re
 import time
+import threading
+import uuid
+import concurrent.futures
 from datetime import datetime
 
 from flask import Blueprint, jsonify, request
@@ -66,6 +69,81 @@ from services.threat_intel import check_ip_reputation
 from services.vpn import detect_vpn
 
 agent_bp = Blueprint("agent", __name__)
+
+# ── SocketIO reference (injected by app.py at startup) ────────────────
+_agent_socketio = None
+_agent_flask_app = None
+
+
+def set_agent_socketio(sio, flask_app=None):
+    """Called once by app.py to inject SocketIO for agent event streaming."""
+    global _agent_socketio, _agent_flask_app
+    _agent_socketio = sio
+    _agent_flask_app = flask_app
+
+
+def _emit_agent_event(event_type: str, data: dict, session_id: str = ""):
+    """Emit a real-time agent event via SocketIO.
+
+    Event types:
+        agent_step   — tool_call, tool_result, tool_skip, thought
+        agent_final  — final_answer verdict
+        agent_done   — investigation complete (summary)
+    """
+    if not _agent_socketio:
+        return
+    payload = {
+        "type": event_type,
+        "session_id": session_id,
+        "timestamp": time.time(),
+        **data,
+    }
+    try:
+        if _agent_flask_app:
+            with _agent_flask_app.app_context():
+                _agent_socketio.emit("agent_event", payload)
+        else:
+            _agent_socketio.emit("agent_event", payload)
+    except Exception as e:
+        print(f"[AGENT-WS] Failed to emit {event_type}: {e}")
+
+# ── Investigation session store ──────────────────────────────────────
+# In-memory ring buffer of recent investigations (lost on restart).
+MAX_SESSIONS = 20
+_investigation_sessions: list[dict] = []
+
+
+def _store_investigation(session: dict):
+    """Store a completed investigation for follow-up queries."""
+    _investigation_sessions.append(session)
+    if len(_investigation_sessions) > MAX_SESSIONS:
+        _investigation_sessions.pop(0)
+
+
+def _get_last_investigation() -> dict | None:
+    """Return the most recent investigation, if any."""
+    return _investigation_sessions[-1] if _investigation_sessions else None
+
+
+@agent_bp.route("/api/agent/sessions", methods=["GET"])
+def get_sessions():
+    """Return investigation history (most recent first)."""
+    # Return lightweight summaries (no full tool results)
+    summaries = []
+    for s in reversed(_investigation_sessions):
+        summaries.append({
+            "session_id": s.get("session_id", ""),
+            "query": s.get("query", ""),
+            "verdict": s.get("verdict"),
+            "confidence": s.get("confidence", 0),
+            "tools_chain": s.get("tools_chain", []),
+            "steps": s.get("steps", 0),
+            "duration_seconds": s.get("duration_seconds", 0),
+            "timestamp": s.get("timestamp", ""),
+            "model": s.get("model", ""),
+        })
+    return jsonify({"sessions": summaries, "count": len(summaries)})
+
 
 # ── Model configuration ─────────────────────────────────────────────
 
@@ -82,9 +160,12 @@ OPENROUTER_MODELS = [
     "openrouter/free",
 ]
 
-AGENT_MAX_TOKENS = 256       # Output is always a short JSON blob — 256 is plenty (was: 1024)
+AGENT_MAX_TOKENS = 1024      # Need room for multi-tool reasoning chains
 AGENT_TEMPERATURE = 0.3
-MAX_AGENT_STEPS = 2          # phi4-mini sets needs_followup too eagerly; cap at 2 (was: 4)
+MAX_AGENT_STEPS = 10         # Allow up to 10 autonomous investigation steps
+MAX_TOOL_RETRIES = 2         # Max retries for the same tool before giving up
+TOOL_TIMEOUT = 30            # Default tool execution timeout in seconds
+CAPTURE_TOOL_TIMEOUT = 90    # Extended timeout for capture_and_classify
 
 # Runtime state: which provider/model is actually active
 _active_provider = "unknown"
@@ -95,24 +176,46 @@ OLLAMA_PROBE_TTL  = 30     # Re-probe at most once per 30 seconds
 
 # ── System prompt ────────────────────────────────────────────────────
 
-SYSTEM_PROMPT = """You are VPN-PacketSense AI, expert network analyst in VPN-PacketSense v2 (live packet capture, PCAP analysis, VPN detection, geo-map, threat intel, behaviour analysis, switch monitoring).
+SYSTEM_PROMPT = """You are the PacketSense Network Investigation Agent — an autonomous tool-using network analyst embedded in VPN-PacketSense v2.
 
-For EVERY response output ONLY valid JSON, no prose outside it:
-{"mode":"tool"|"chat","tool":"<name>","params":{},"answer":"<md>","brief_plan":"<1 sentence>","needs_followup":false}
+You investigate network traffic by calling PacketSense tools. You are a ReAct agent: you think, act (call a tool), observe the result, then decide the next action.
 
-mode="chat": greetings/general Q&A/what-is-this — write reply in "answer", no tool.
-mode="tool": any live data question — pick best tool, set answer="".
-needs_followup=true ONLY when one more tool call is essential.
+IMPORTANT RULES:
+1. For EVERY response, output ONLY valid JSON — no prose outside the JSON object.
+2. Do NOT answer data-dependent questions from assumptions. Use tools to obtain evidence.
+3. Choose the next tool based on previous observations.
+4. You may perform multiple tool calls across steps. After each tool result, you will be asked to continue.
+5. If a tool fails, inspect the error and try a different approach. Do NOT repeat the exact same failed call.
+6. When you have gathered sufficient evidence, call the "final_answer" tool to deliver your conclusion.
+7. Distinguish between: confirmed, likely, suspicious, inconclusive.
+8. Never fabricate packet counts, IP addresses, confidence values, threat levels, or tool results.
 
-TOOLS (all params={} unless noted):
-get_stats | get_vpn | get_top_talkers | get_flows({"limit":5})
-check_ip({"ip":""}) | get_vpn_signals({"ip":""}) | check_abuse_ip({"ip":""}) | get_geo_ip({"ip":""})
-analyze_traffic | get_threat_summary | scan_anomalies | get_bandwidth_analysis
-get_behaviour_summary | get_device_behaviour({"ip":""})
-get_session_info | get_capture_devices | get_switch_devices | get_switch_vpn_alerts
-inject_packet({"src_ip":"","dst_ip":"","protocol":"TCP"}) | explain_packet({"fields":""}) | export_report | general_answer({"answer":""})
+RESPONSE FORMAT (strict JSON, every response):
+{"mode":"tool"|"chat", "tool":"<tool_name>", "params":{}, "answer":"", "summary":"<1-2 sentence activity summary>"}
 
-Rules: IP lookup→check_ip; abuse→check_abuse_ip; map→inject_packet; brief_plan=1 sentence.
+mode="chat": For greetings, general Q&A, what-is-this — write reply in "answer", set tool="general_answer".
+mode="tool": For any data/analysis question — pick the best tool, set answer="".
+
+AVAILABLE TOOLS:
+  Core: get_stats | get_vpn | get_top_talkers | get_flows({"limit":N}) | check_ip({"ip":"x.x.x.x"})
+  Analysis: analyze_traffic | get_threat_summary | get_vpn_signals({"ip":"x.x.x.x"}) | scan_anomalies | get_bandwidth_analysis
+  Behaviour: get_behaviour_summary | get_device_behaviour({"ip":"x.x.x.x"})
+  Session: get_session_info | get_capture_devices | get_switch_devices | get_switch_vpn_alerts
+  Enrichment: check_abuse_ip({"ip":"x.x.x.x"}) | get_geo_ip({"ip":"x.x.x.x"})
+  Map: inject_packet({"src_ip":"","dst_ip":"","protocol":"TCP"})
+  Utility: explain_packet({"fields":"..."}) | export_report
+  Capture: capture_and_classify({"interface":"Wi-Fi","duration":20}) — start a timed live capture and classify VPN
+  Terminal: final_answer({"verdict":"...","confidence":N,"summary":"...","evidence":["..."]}) — call this when investigation is complete
+  Chat: general_answer({"answer":"..."}) — for conversational replies
+
+final_answer verdicts: VPN | NON_VPN | LIKELY_VPN | SUSPICIOUS | INCONCLUSIVE | INFO (for non-VPN queries)
+final_answer confidence: 0-100 (use actual data, do not invent)
+
+EXAMPLE INVESTIGATION FLOW:
+Step 1: {"mode":"tool","tool":"get_capture_devices","params":{},"summary":"Checking available network interfaces"}
+Step 2: {"mode":"tool","tool":"capture_and_classify","params":{"interface":"Wi-Fi","duration":20},"summary":"Capturing traffic on Wi-Fi for 20 seconds"}
+Step 3: {"mode":"tool","tool":"get_vpn","params":{},"summary":"Checking for VPN-detected IPs"}
+Step 4: {"mode":"tool","tool":"final_answer","params":{"verdict":"VPN","confidence":87,"summary":"VPN traffic detected with high confidence.","evidence":["3 VPN IPs detected","WireGuard protocol on port 51820"]},"summary":"Delivering final conclusion"}
 """
 
 # ── Tool executor functions ───────────────────────────────────────────
@@ -971,6 +1074,203 @@ def _export_report() -> dict:
     return report
 
 
+# ── Timeout-wrapped tool execution ───────────────────────────────────
+
+def _execute_tool_with_timeout(tool_fn, params: dict, tool_name: str) -> dict:
+    """Execute a tool function with a timeout. Returns result dict or error."""
+    timeout = CAPTURE_TOOL_TIMEOUT if tool_name == "capture_and_classify" else TOOL_TIMEOUT
+    try:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+            future = executor.submit(tool_fn, params)
+            return future.result(timeout=timeout)
+    except concurrent.futures.TimeoutError:
+        return {"error": f"Tool '{tool_name}' timed out after {timeout} seconds"}
+    except Exception as e:
+        return {"error": f"Tool '{tool_name}' failed: {str(e)}"}
+
+
+# ── Capture and classify tool ───────────────────────────────────────
+
+def _capture_and_classify(params: dict) -> dict:
+    """Start a timed live capture using the existing PacketSense engine,
+    then return structured VPN detection results.
+
+    This reuses the same capture pipeline as manual mode.
+    """
+    from services.capture import start_unified_capture
+
+    # If capture is already running, just return current stats
+    if config.capture_running:
+        return _build_capture_result("Capture was already running; returning current data.")
+
+    # Validate parameters
+    duration = params.get("duration", 20)
+    if isinstance(duration, str):
+        try:
+            duration = int(duration)
+        except ValueError:
+            duration = 20
+    duration = max(5, min(60, duration))  # Clamp 5-60 seconds
+
+    interface = params.get("interface") or None
+
+    # If an interface name was provided, try to resolve it
+    if interface:
+        try:
+            devices = _get_capture_devices()
+            ifaces = devices.get("interfaces", [])
+            # Try to match by name (case-insensitive)
+            matched = None
+            for iface in ifaces:
+                if iface.get("name", "").lower() == interface.lower():
+                    matched = iface["name"]
+                    break
+                if interface.lower() in iface.get("description", "").lower():
+                    matched = iface["name"]
+                    break
+            if matched:
+                interface = matched
+            else:
+                return {"error": f"Interface '{interface}' not found. Available: {[i['name'] for i in ifaces[:5]]}"}
+        except Exception as e:
+            return {"error": f"Could not validate interface: {e}"}
+
+    # Set up capture configuration
+    config.CAPTURE_MODE = "local"
+    config.CAPTURE_INTERFACE = interface
+    config.CAPTURE_SUBNET = None
+
+    # Clear existing state for a fresh capture
+    config.GEOIP_CACHE.clear()
+    config.VPN_CACHE.clear()
+    config.vpn_ips.clear()
+    config.reset_live_stats()
+    config.packet_history.clear()
+
+    # Start capture in a background thread
+    capture_thread = threading.Thread(target=start_unified_capture, daemon=True)
+    capture_thread.start()
+
+    # Wait for the specified duration
+    print(f"[AGENT] capture_and_classify: Capturing on '{interface or 'all'}' for {duration}s...")
+    time.sleep(duration)
+
+    # Stop capture
+    config.capture_running = False
+    config.SWITCH_MONITOR_RUNNING = False
+    time.sleep(0.5)  # Allow cleanup
+
+    # Wait for thread to finish (with timeout)
+    capture_thread.join(timeout=5)
+
+    return _build_capture_result(f"Captured for {duration} seconds on {interface or 'all interfaces'}.")
+
+
+def _build_capture_result(message: str) -> dict:
+    """Build structured capture result from current live_stats."""
+    s = config.live_stats
+    total_packets = s.get("total_packets", 0)
+    total_bytes = s.get("total_bytes", 0)
+    vpn_ips = s.get("vpn_ips", set())
+    vpn_details = s.get("vpn_details", {})
+
+    # Collect VPN classifications
+    vpn_results = []
+    for ip in vpn_ips:
+        detail = vpn_details.get(ip, {})
+        geo = config.GEOIP_CACHE.get(ip, {})
+        vpn_results.append({
+            "ip": ip,
+            "provider": detail.get("provider", geo.get("vpn_provider", "Unknown")),
+            "confidence": detail.get("vpn_confidence", geo.get("vpn_confidence", 0)),
+            "classification": detail.get("vpn_classification", geo.get("vpn_classification", "unknown")),
+            "method": detail.get("vpn_method", geo.get("vpn_method", "unknown")),
+        })
+
+    # Also check GEOIP_CACHE for additional VPN IPs not in vpn_ips set
+    for ip, geo in config.GEOIP_CACHE.items():
+        if geo.get("is_vpn") and ip not in {v["ip"] for v in vpn_results}:
+            vpn_results.append({
+                "ip": ip,
+                "provider": geo.get("vpn_provider", "Unknown"),
+                "confidence": geo.get("vpn_confidence", 0),
+                "classification": geo.get("vpn_classification", "unknown"),
+                "method": geo.get("vpn_method", "unknown"),
+            })
+
+    # Determine overall classification
+    if vpn_results:
+        max_conf = max(v.get("confidence", 0) for v in vpn_results)
+        if max_conf >= 61:
+            classification = "VPN"
+        elif max_conf >= 36:
+            classification = "LIKELY_VPN"
+        else:
+            classification = "SUSPICIOUS"
+    else:
+        classification = "NON_VPN"
+        max_conf = 0
+
+    # Protocols captured
+    protocols = sorted(
+        s.get("protocols", {}).items(),
+        key=lambda x: x[1],
+        reverse=True
+    )[:8]
+
+    # Top talkers
+    top_talkers = sorted(
+        s.get("top_talkers", {}).items(),
+        key=lambda x: x[1],
+        reverse=True
+    )[:5]
+
+    result = {
+        "status": "success" if total_packets > 0 else "empty_capture",
+        "message": message,
+        "packets_captured": total_packets,
+        "bytes_captured": total_bytes,
+        "unique_ips": len(s.get("unique_ips", set())),
+        "classification": classification,
+        "confidence": round(max_conf, 1),
+        "vpn_ips_detected": len(vpn_results),
+        "vpn_results": vpn_results[:10],
+        "protocols": [{"name": p[0], "count": p[1]} for p in protocols],
+        "top_talkers": [{"ip": t[0], "bytes": t[1]} for t in top_talkers],
+    }
+
+    if total_packets == 0:
+        result["error"] = "No packets captured. The interface may be inactive or requires elevated privileges."
+
+    return result
+
+
+# ── Final answer tool ─────────────────────────────────────────────────
+
+def _final_answer(params: dict) -> dict:
+    """Produce a structured investigation verdict. This is the terminal tool."""
+    valid_verdicts = {"VPN", "NON_VPN", "LIKELY_VPN", "SUSPICIOUS", "INCONCLUSIVE", "INFO"}
+    verdict = params.get("verdict", "INCONCLUSIVE").upper()
+    if verdict not in valid_verdicts:
+        verdict = "INCONCLUSIVE"
+
+    confidence = params.get("confidence", 0)
+    if isinstance(confidence, str):
+        try:
+            confidence = float(confidence)
+        except ValueError:
+            confidence = 0
+    confidence = max(0, min(100, confidence))
+
+    return {
+        "type": "final",
+        "verdict": verdict,
+        "confidence": round(confidence, 1),
+        "summary": params.get("summary", "Investigation complete."),
+        "evidence": params.get("evidence", []),
+    }
+
+
 # ── Tool dispatch table ───────────────────────────────────────────────
 
 TOOLS = {
@@ -1002,6 +1302,10 @@ TOOLS = {
     # Utility
     "explain_packet":         lambda p: _explain_packet(p.get("fields", "")),
     "export_report":          lambda p: _export_report(),
+    # Capture
+    "capture_and_classify":   lambda p: _capture_and_classify(p),
+    # Terminal
+    "final_answer":           lambda p: _final_answer(p),
     "general_answer":         lambda p: {"answer": p.get("answer", "")},
 }
 
@@ -1189,11 +1493,17 @@ def _call_openrouter(messages: list) -> str | None:
         return None
 
 
-def _call_llm(messages: list) -> str | None:
+def _call_llm(messages: list, preferred_provider: str = "auto") -> str | None:
     """Try Ollama first, fall back to OpenRouter, return None if both fail.
     Ollama availability is cached for OLLAMA_PROBE_TTL seconds.
+    If preferred_provider is 'ollama', only try Ollama.
+    If preferred_provider is 'openrouter', only try OpenRouter.
     """
     global _ollama_available
+
+    if preferred_provider == "openrouter":
+        return _call_openrouter(messages)
+
     # Probe Ollama if never checked or TTL has expired
     if _ollama_available is None:
         _probe_ollama()
@@ -1207,12 +1517,15 @@ def _call_llm(messages: list) -> str | None:
         _ollama_probe_ts = 0.0
         print("[AGENT] Ollama unreachable, switching to OpenRouter fallback.")
 
+    if preferred_provider == "ollama":
+        return None  # User explicitly wanted Ollama only
+
     return _call_openrouter(messages)
 
 
 # ── Conversational LLM call (free-form prose, no JSON required) ───────
 
-def _call_llm_chat(messages: list) -> str | None:
+def _call_llm_chat(messages: list, preferred_provider: str = "auto") -> str | None:
     """Call LLM in plain conversational mode (no tool JSON needed)."""
     # Use a simpler system prompt for pure chat
     chat_messages = [
@@ -1228,7 +1541,7 @@ def _call_llm_chat(messages: list) -> str | None:
         }
     ] + [m for m in messages if m["role"] != "system"]
 
-    return _call_llm(chat_messages)
+    return _call_llm(chat_messages, preferred_provider)
 
 
 # ── Response formatter ─────────────────────────────────────────────────
@@ -1652,6 +1965,54 @@ def _format_tool_result(tool: str, result: dict, brief_plan: str) -> str:
         lines.append(f"\n[OK] Full report data is available in the API response JSON (`tool_result`).")
         return "\n".join(lines)
 
+    elif tool == "capture_and_classify":
+        r = result
+        status = r.get("status", "unknown")
+        cls = r.get("classification", "INCONCLUSIVE")
+        conf = r.get("confidence", 0)
+        pkts = r.get("packets_captured", 0)
+        total_bytes = r.get("bytes_captured", 0)
+
+        cls_labels = {
+            "VPN": "[VPN] VPN TRAFFIC DETECTED",
+            "LIKELY_VPN": "[VPN] VPN TRAFFIC LIKELY",
+            "SUSPICIOUS": "[!] SUSPICIOUS TRAFFIC",
+            "NON_VPN": "[OK] NO VPN DETECTED",
+        }
+        cls_label = cls_labels.get(cls, cls)
+
+        lines = [f"**[CAPTURE] Live Capture Result**\n"]
+        lines.append(f"- **Status**: {status}")
+        lines.append(f"- **Packets captured**: {pkts:,}")
+        lines.append(f"- **Data volume**: {_fmt_bytes(total_bytes)}")
+        lines.append(f"- **Unique IPs**: {r.get('unique_ips', 0)}")
+        lines.append(f"\n**Classification**: {cls_label}")
+        if conf > 0:
+            lines.append(f"**Confidence**: {conf}%")
+
+        vpn_results = r.get("vpn_results", [])
+        if vpn_results:
+            lines.append(f"\n**VPN IPs Detected ({len(vpn_results)}):**")
+            for v in vpn_results[:5]:
+                lines.append(f"  - `{v['ip']}` — {v.get('provider', '?')} ({v.get('classification', '?')}, {v.get('confidence', 0)}%)")
+
+        protos = r.get("protocols", [])
+        if protos:
+            lines.append("\n**Protocols:**")
+            for p in protos[:5]:
+                lines.append(f"  - {p['name']}: {p['count']:,} packets")
+
+        top_talkers = r.get("top_talkers", [])
+        if top_talkers:
+            lines.append("\n**Top Talkers:**")
+            for t in top_talkers[:5]:
+                lines.append(f"  - `{t['ip']}` — {_fmt_bytes(t['bytes'])}")
+
+        if r.get("message"):
+            lines.append(f"\n_{r['message']}_")
+
+        return "\n".join(lines)
+
     return json.dumps(result, indent=2)[:800]
 
 
@@ -1686,84 +2047,120 @@ def chat():
     Supports both conversational and tool-driven responses via intent
     classification. Ollama is tried first; OpenRouter is the fallback.
 
+    The agent loop continues until:
+      - final_answer is called (normal termination)
+      - MAX_AGENT_STEPS is reached
+      - LLM fails to produce a valid decision
+      - The same tool fails MAX_TOOL_RETRIES times consecutively
+
     Request body:
-        { "message": str, "history": [{"role": "user"|"assistant", "content": str}] }
+        { "message": str, "history": [{"role": "user"|"assistant", "content": str}],
+          "agentic": bool (default false — when true, uses full autonomous loop) }
 
     Response:
         {
           "reply": str,             — formatted response text (markdown)
           "tool_used": str,         — primary tool called
           "tools_chain": list[str], — all tools called in order (multi-step)
+          "steps_detail": list,     — detailed step info [{step, tool, summary, status}]
           "map_action": dict|null,  — non-null for inject_packet
           "tool_result": dict,      — final tool output
+          "verdict": dict|null,     — non-null when final_answer was called
           "steps": int,             — how many steps were executed
           "model": str,             — model name used
           "provider": str,          — "ollama" | "openrouter" | "regex-fallback"
-          "mode": str,              — "chat" | "tool"
+          "mode": str,              — "chat" | "tool" | "agentic"
         }
     """
     body = request.get_json(silent=True) or {}
     user_message = (body.get("message") or "").strip()
     history = body.get("history", [])
+    agentic_mode = body.get("agentic", False)
+    preferred_provider = body.get("provider", "auto")  # 'auto', 'ollama', 'openrouter'
 
     if not user_message:
         return jsonify({"error": "Empty message"}), 400
 
     # Build initial LLM message list
     llm_messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    for h in history[-4:]:  # last 2 turns — enough context, saves prefill time (was: 8)
+    for h in history[-6:]:  # last 3 turns for context
         if h.get("role") in ("user", "assistant") and h.get("content"):
             llm_messages.append({"role": h["role"], "content": h["content"]})
     llm_messages.append({"role": "user", "content": user_message})
 
-    # ── Try LLM for intent classification ────────────────────────────
+    # Inject previous investigation context for follow-up queries
+    if agentic_mode:
+        last_inv = _get_last_investigation()
+        if last_inv and last_inv.get("verdict"):
+            context = (
+                f"[CONTEXT] Previous investigation (session {last_inv['session_id']}): "
+                f"query='{last_inv['query']}', verdict={last_inv['verdict'].get('verdict', '?')}, "
+                f"confidence={last_inv['verdict'].get('confidence', 0)}%, "
+                f"tools_used={last_inv['tools_chain']}, "
+                f"evidence={last_inv['verdict'].get('evidence', [])}. "
+                f"Use this context if the user is asking a follow-up. Do not repeat the same investigation."
+            )
+            llm_messages.insert(-1, {"role": "system", "content": context})
+
+    # ── Tracking state ────────────────────────────────────────────────
+    session_id = str(uuid.uuid4())[:8]  # Short unique ID for this investigation
     all_reply_parts: list[str] = []
     tools_chain: list[str] = []
+    steps_detail: list[dict] = []  # Detailed step info for UI
     map_action = None
     last_tool_result: dict = {}
+    verdict_result: dict | None = None
     model_used = "regex-fallback"
     provider_used = "regex-fallback"
-    first_brief_plan = ""
-    response_mode = "tool"
+    first_summary = ""
+    response_mode = "agentic" if agentic_mode else "tool"
+    tool_failure_tracker: dict[str, int] = {}  # tool_name -> consecutive failure count
+    start_time = time.time()
 
-    # ── Regex fast-path: skip LLM entirely for clearly-matched intents ────
-    # Run _regex_intent() first. If it returns a specific tool (not general_answer),
-    # execute it directly without any LLM call — saves 10-20s per request.
-    _fast_decision = _regex_intent(user_message)
-    _fast_tool = _fast_decision.get("tool", "general_answer")
-    _use_fast_path = (
-        _fast_tool != "general_answer"
-        and _fast_decision.get("mode") == "tool"
-    )
+    # Emit investigation start event
+    if agentic_mode:
+        _emit_agent_event("agent_start", {
+            "query": user_message,
+            "max_steps": MAX_AGENT_STEPS,
+        }, session_id)
 
-    if _use_fast_path:
-        # Execute tool directly — no LLM needed
-        tool_fn = TOOLS.get(_fast_tool, TOOLS["general_answer"])
-        try:
-            tool_result = tool_fn(_fast_decision.get("params", {}))
-        except Exception as e:
-            tool_result = {"error": str(e)}
-        reply_text = _format_tool_result(_fast_tool, tool_result, _fast_decision.get("brief_plan", ""))
-        return jsonify({
-            "reply": reply_text,
-            "tool_used": _fast_tool,
-            "tools_chain": [_fast_tool],
-            "brief_plan": _fast_decision.get("brief_plan", ""),
-            "map_action": {
-                "type": "inject_packet",
-                "src": tool_result.get("src"),
-                "dst": tool_result.get("dst"),
-                "protocol": tool_result.get("protocol", "TCP"),
-            } if _fast_tool == "inject_packet" and tool_result.get("injected") else None,
-            "tool_result": tool_result,
-            "steps": 1,
-            "model": "regex-fast-path",
-            "provider": "regex-fast-path",
-            "mode": "tool",
-        })
+    # ── Non-agentic fast-path: regex for clearly-matched single-tool intents ──
+    if not agentic_mode:
+        _fast_decision = _regex_intent(user_message)
+        _fast_tool = _fast_decision.get("tool", "general_answer")
+        _use_fast_path = (
+            _fast_tool != "general_answer"
+            and _fast_decision.get("mode") == "tool"
+        )
 
-    # ── LLM path (complex / ambiguous queries) ────────────────────────
-    llm_response = _call_llm(llm_messages)
+        if _use_fast_path:
+            tool_fn = TOOLS.get(_fast_tool, TOOLS["general_answer"])
+            try:
+                tool_result = tool_fn(_fast_decision.get("params", {}))
+            except Exception as e:
+                tool_result = {"error": str(e)}
+            reply_text = _format_tool_result(_fast_tool, tool_result, _fast_decision.get("brief_plan", ""))
+            return jsonify({
+                "reply": reply_text,
+                "tool_used": _fast_tool,
+                "tools_chain": [_fast_tool],
+                "steps_detail": [{"step": 1, "tool": _fast_tool, "summary": _fast_decision.get("brief_plan", ""), "status": "success" if not tool_result.get("error") else "error"}],
+                "map_action": {
+                    "type": "inject_packet",
+                    "src": tool_result.get("src"),
+                    "dst": tool_result.get("dst"),
+                    "protocol": tool_result.get("protocol", "TCP"),
+                } if _fast_tool == "inject_packet" and tool_result.get("injected") else None,
+                "tool_result": tool_result,
+                "verdict": None,
+                "steps": 1,
+                "model": "regex-fast-path",
+                "provider": "regex-fast-path",
+                "mode": "tool",
+            })
+
+    # ── LLM path ──────────────────────────────────────────────────────
+    llm_response = _call_llm(llm_messages, preferred_provider)
     tool_decision = None
 
     if llm_response:
@@ -1772,52 +2169,58 @@ def chat():
         tool_decision = _parse_llm_json(llm_response)
 
     # ── Conversational mode (mode="chat") ─────────────────────────────
-    if tool_decision and tool_decision.get("mode") == "chat":
+    if tool_decision and tool_decision.get("mode") == "chat" and not agentic_mode:
         response_mode = "chat"
         answer = tool_decision.get("answer", "").strip()
 
-        # If the LLM gave an answer directly, use it
         if answer:
             reply_text = answer
         else:
-            # Ask the LLM again in plain chat mode
-            chat_reply = _call_llm_chat(llm_messages)
+            chat_reply = _call_llm_chat(llm_messages, preferred_provider)
             reply_text = chat_reply if chat_reply else "I'm here to help! Ask me anything about your network traffic."
 
-        first_brief_plan = tool_decision.get("brief_plan", "Conversational reply")
+        first_summary = tool_decision.get("summary", tool_decision.get("brief_plan", "Conversational reply"))
         return jsonify({
             "reply": reply_text,
             "tool_used": "general_answer",
             "tools_chain": ["general_answer"],
-            "brief_plan": first_brief_plan,
+            "steps_detail": [],
             "map_action": None,
             "tool_result": {"answer": reply_text},
+            "verdict": None,
             "steps": 0,
             "model": model_used,
             "provider": provider_used,
             "mode": "chat",
         })
 
-    # ── Tool mode (mode="tool") — ReAct agentic loop ──────────────────
+    # ── ReAct Agentic Loop ────────────────────────────────────────────
     for step in range(MAX_AGENT_STEPS):
         if step == 0:
-            # Already fetched at the top; use existing tool_decision or regex
             if not tool_decision:
-                tool_decision = _regex_intent(user_message)
-                model_used = "regex-fallback"
-                provider_used = "regex-fallback"
+                if agentic_mode:
+                    # In agentic mode, if LLM fails, try regex as starting point
+                    tool_decision = _regex_intent(user_message)
+                    model_used = "regex-fallback"
+                    provider_used = "regex-fallback"
+                else:
+                    tool_decision = _regex_intent(user_message)
+                    model_used = "regex-fallback"
+                    provider_used = "regex-fallback"
         else:
-            # Fetch next LLM decision
-            llm_response = _call_llm(llm_messages)
+            # Fetch next LLM decision for the next step
+            llm_response = _call_llm(llm_messages, preferred_provider)
             tool_decision = None
             if llm_response:
                 model_used = _active_model
                 provider_used = _active_provider
                 tool_decision = _parse_llm_json(llm_response)
             if not tool_decision:
+                # LLM failed to produce valid JSON — terminate loop
+                print(f"[AGENT] Step {step + 1}: LLM failed to produce valid decision, terminating.")
                 break
 
-        # Handle chat mode within loop (shouldn't happen, but be safe)
+        # Handle chat mode within loop
         if tool_decision.get("mode") == "chat":
             answer = tool_decision.get("answer", "")
             if answer:
@@ -1826,26 +2229,129 @@ def chat():
 
         tool_name = tool_decision.get("tool", "general_answer")
         params = tool_decision.get("params", {})
-        brief_plan = tool_decision.get("brief_plan", "")
-        needs_followup = bool(tool_decision.get("needs_followup", False))
+        summary = tool_decision.get("summary", tool_decision.get("brief_plan", f"Calling {tool_name}"))
 
         if step == 0:
-            first_brief_plan = brief_plan
+            first_summary = summary
 
-        # Execute the tool
+        # Track step detail
+        step_info = {
+            "step": step + 1,
+            "tool": tool_name,
+            "summary": summary,
+            "params": params,
+            "status": "running",
+        }
+
+        # ── Check for repeated tool failure ───────────────────────────
+        if tool_failure_tracker.get(tool_name, 0) >= MAX_TOOL_RETRIES:
+            print(f"[AGENT] Step {step + 1}: Tool '{tool_name}' failed {MAX_TOOL_RETRIES} times, skipping.")
+            step_info["status"] = "skipped"
+            step_info["error"] = f"Tool failed {MAX_TOOL_RETRIES} times consecutively"
+            steps_detail.append(step_info)
+            # Emit skip event
+            _emit_agent_event("agent_step", {
+                "step": step + 1,
+                "action": "tool_skip",
+                "tool": tool_name,
+                "summary": summary,
+                "reason": step_info["error"],
+            }, session_id)
+            # Tell the LLM this tool is unavailable
+            llm_messages.append({
+                "role": "assistant",
+                "content": json.dumps(tool_decision),
+            })
+            llm_messages.append({
+                "role": "user",
+                "content": f"Tool '{tool_name}' has failed multiple times and is unavailable. Choose a different approach or call final_answer if you have enough evidence.",
+            })
+            continue
+
+        # Emit tool_call event (before execution)
+        _emit_agent_event("agent_step", {
+            "step": step + 1,
+            "action": "tool_call",
+            "tool": tool_name,
+            "params": params,
+            "summary": summary,
+        }, session_id)
+
+        # ── Execute the tool (with timeout) ───────────────────────
         tool_fn = TOOLS.get(tool_name, TOOLS["general_answer"])
-        try:
-            tool_result = tool_fn(params)
-        except Exception as e:
-            tool_result = {"error": str(e)}
+        tool_result = _execute_tool_with_timeout(tool_fn, params, tool_name)
 
         last_tool_result = tool_result
         tools_chain.append(tool_name)
 
-        # Format this step's reply
-        step_reply = _format_tool_result(tool_name, tool_result, brief_plan)
+        # Track success/failure for retry limiting
+        if tool_result.get("error"):
+            tool_failure_tracker[tool_name] = tool_failure_tracker.get(tool_name, 0) + 1
+            step_info["status"] = "error"
+            step_info["error"] = tool_result["error"]
+        else:
+            tool_failure_tracker[tool_name] = 0  # Reset on success
+            step_info["status"] = "success"
+
+        steps_detail.append(step_info)
+
+        # Emit tool_result event (after execution)
+        _emit_agent_event("agent_step", {
+            "step": step + 1,
+            "action": "tool_result",
+            "tool": tool_name,
+            "status": step_info["status"],
+            "summary": summary,
+            "error": step_info.get("error"),
+        }, session_id)
+
+        # ── Handle final_answer (terminal tool) ───────────────────────
+        if tool_name == "final_answer":
+            verdict_result = tool_result
+            # Format the final answer for display
+            verdict = tool_result.get("verdict", "INCONCLUSIVE")
+            confidence = tool_result.get("confidence", 0)
+            fa_summary = tool_result.get("summary", "")
+            evidence = tool_result.get("evidence", [])
+
+            verdict_labels = {
+                "VPN": "VPN TRAFFIC DETECTED",
+                "NON_VPN": "NO VPN DETECTED",
+                "LIKELY_VPN": "VPN TRAFFIC LIKELY",
+                "SUSPICIOUS": "SUSPICIOUS ACTIVITY",
+                "INCONCLUSIVE": "INCONCLUSIVE",
+                "INFO": "ANALYSIS COMPLETE",
+            }
+            verdict_label = verdict_labels.get(verdict, verdict)
+
+            lines = [f"**{verdict_label}**"]
+            if confidence > 0:
+                lines.append(f"\n**Confidence**: {confidence}%")
+            if fa_summary:
+                lines.append(f"\n{fa_summary}")
+            if evidence:
+                lines.append("\n**Evidence:**")
+                for ev in evidence:
+                    lines.append(f"- {ev}")
+
+            all_reply_parts.append("\n".join(lines))
+
+            # Emit final_answer event
+            _emit_agent_event("agent_final", {
+                "verdict": verdict,
+                "confidence": confidence,
+                "summary": fa_summary,
+                "evidence": evidence,
+                "steps_taken": step + 1,
+            }, session_id)
+            break
+
+        # ── Format this step's reply ──────────────────────────────────
+        step_reply = _format_tool_result(tool_name, tool_result, summary)
         if step > 0 and step_reply:
-            step_reply = f"\n\n---\n** Follow-up ({tool_name.replace('_', ' ')}):** {brief_plan}\n\n{step_reply}"
+            step_reply = f"\n\n---\n**Step {step + 1} — {summary}**\n\n{step_reply}"
+        elif step == 0:
+            step_reply = f"**Step 1 — {summary}**\n\n{step_reply}"
         all_reply_parts.append(step_reply)
 
         # Map action (only from inject_packet)
@@ -1857,33 +2363,71 @@ def chat():
                 "protocol": tool_result.get("protocol", "TCP"),
             }
 
-        if not needs_followup or tool_name == "general_answer":
-            break
+        # ── Non-agentic: stop after single tool (legacy behaviour) ────
+        if not agentic_mode:
+            needs_followup = bool(tool_decision.get("needs_followup", False))
+            if not needs_followup or tool_name == "general_answer":
+                break
 
-        # Feed result back to LLM for next step
-        result_summary = json.dumps(tool_result, default=str)[:1200]
+        # ── Feed result back to LLM for next step ────────────────────
+        result_summary = json.dumps(tool_result, default=str)[:2000]
         llm_messages.append({
             "role": "assistant",
             "content": json.dumps(tool_decision),
         })
+        continuation_msg = (
+            f"Tool result from {tool_name}:\n{result_summary}\n\n"
+            f"Step {step + 1} of {MAX_AGENT_STEPS} complete. "
+            f"Analyze the result and decide: call another tool for more evidence, "
+            f"or call final_answer with your verdict if you have enough evidence."
+        )
         llm_messages.append({
             "role": "user",
-            "content": f"Tool result from {tool_name}:\n{result_summary}\n\nContinue analysis. Set needs_followup=false when done.",
+            "content": continuation_msg,
         })
 
-    reply_text = "".join(all_reply_parts)
+    reply_text = "\n".join(all_reply_parts) if all_reply_parts else "No results available."
+
+    # Emit investigation complete event
+    elapsed = round(time.time() - start_time, 1)
+    if agentic_mode:
+        _emit_agent_event("agent_done", {
+            "steps": len(tools_chain),
+            "tools_chain": tools_chain,
+            "duration_seconds": elapsed,
+            "has_verdict": verdict_result is not None,
+            "model": model_used,
+            "provider": provider_used,
+        }, session_id)
+
+        # Store investigation for follow-ups
+        _store_investigation({
+            "session_id": session_id,
+            "query": user_message,
+            "verdict": verdict_result,
+            "confidence": verdict_result.get("confidence", 0) if verdict_result else 0,
+            "tools_chain": tools_chain,
+            "steps": len(tools_chain),
+            "duration_seconds": elapsed,
+            "timestamp": datetime.now().isoformat(),
+            "model": model_used,
+            "reply_text": reply_text[:500],  # Keep a summary of the reply
+        })
 
     return jsonify({
         "reply": reply_text,
         "tool_used": tools_chain[0] if tools_chain else "general_answer",
         "tools_chain": tools_chain,
-        "brief_plan": first_brief_plan,
+        "steps_detail": steps_detail,
         "map_action": map_action,
         "tool_result": last_tool_result,
+        "verdict": verdict_result,
         "steps": len(tools_chain),
         "model": model_used,
         "provider": provider_used,
         "mode": response_mode,
+        "session_id": session_id,
+        "duration_seconds": elapsed,
     })
 
 

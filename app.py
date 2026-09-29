@@ -16,7 +16,7 @@ from flask_cors import CORS
 import config
 from routes.api import api, _load_parquet
 from routes.ws import register_ws_handlers
-from routes.agent import agent_bp
+from routes.agent import agent_bp, set_agent_socketio
 from services.capture import set_socketio
 from services.vpn import load_vpn_ip_lists
 from services.threat_intel import load_threat_databases
@@ -44,6 +44,7 @@ app.register_blueprint(api)
 app.register_blueprint(agent_bp)
 register_ws_handlers(socketio)
 set_socketio(socketio, app)
+set_agent_socketio(socketio, app)
 
 # ── Main ──────────────────────────────────────────────────────────
 

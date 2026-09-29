@@ -876,462 +876,399 @@
 				background: transparent;
 			}
 
-			/* ── AGENT CHAT PANEL ─────────────────────── */
-			.agent-fab {
-				position: fixed;
-				bottom: calc(var(--bottombar-h) + 16px);
-				right: 20px;
-				z-index: 90;
-				display: flex;
-				align-items: center;
-				gap: 7px;
-				padding: 0 16px 0 14px;
-				height: 38px;
-				border-radius: 8px;
-				background: var(--bg-glass);
-				backdrop-filter: blur(16px);
-				border: 1px solid rgba(99,102,241,0.35);
-				cursor: pointer;
-				color: var(--text-muted);
-				font-family: 'Inter', sans-serif;
-				font-size: 12px;
-				font-weight: 500;
-				transition: all 0.2s;
-				box-shadow: 0 4px 16px rgba(0,0,0,0.4);
-			}
-			.agent-fab:hover {
-				transform: scale(1.1);
-				box-shadow: 0 6px 28px rgba(99,102,241,0.7);
-			}
-			@keyframes agent-pulse {
-				0%, 100% { box-shadow: 0 4px 20px rgba(99,102,241,0.5); }
-				50% { box-shadow: 0 4px 30px rgba(56,189,248,0.7); }
-			}
-			.agent-panel {
-				position: fixed;
-				bottom: calc(var(--bottombar-h) + 76px);
-				right: 20px;
-				width: 400px;
-				height: 560px;
-				max-height: calc(100vh - var(--topbar-h) - var(--bottombar-h) - 96px);
-				background: rgba(8, 12, 26, 0.92);
-				backdrop-filter: blur(24px);
-				border: 1px solid rgba(99,102,241,0.3);
-				border-radius: 18px;
-				z-index: 89;
-				display: flex;
-				flex-direction: column;
-				transform: scale(0.92) translateY(12px);
-				opacity: 0;
-				pointer-events: none;
-				transition: transform 0.25s cubic-bezier(0.34,1.56,0.64,1), opacity 0.2s;
-				box-shadow: 0 24px 64px rgba(0,0,0,0.6), 0 0 0 1px rgba(99,102,241,0.15);
-			}
-			.agent-panel.open {
-				transform: scale(1) translateY(0);
-				opacity: 1;
-				pointer-events: auto;
-			}
-			.agent-header {
-				padding: 14px 16px 10px;
-				border-bottom: 1px solid rgba(99,102,241,0.2);
-				display: flex;
-				align-items: center;
-				gap: 10px;
-			}
-			.agent-avatar {
-				width: 36px;
-				height: 36px;
-				border-radius: 50%;
-				background: linear-gradient(135deg, #6366f1, #38bdf8);
-				display: flex;
-				align-items: center;
-				justify-content: center;
-				font-size: 16px;
-				flex-shrink: 0;
-			}
-			.agent-title-block { flex: 1; }
-			.agent-title {
-				font-size: 13px;
-				font-weight: 700;
-				background: linear-gradient(90deg, #a5b4fc, #38bdf8);
-				-webkit-background-clip: text;
-				-webkit-text-fill-color: transparent;
-			}
-			.agent-subtitle {
-				font-size: 10px;
-				color: var(--text-dim);
-				margin-top: 1px;
-			}
-			.agent-model-badge {
-				font-size: 9px;
-				padding: 2px 8px;
-				border-radius: 10px;
-				background: rgba(99,102,241,0.15);
-				color: #a5b4fc;
-				border: 1px solid rgba(99,102,241,0.25);
-				white-space: nowrap;
-				display: flex;
-				align-items: center;
-				gap: 5px;
-			}
-			.agent-status-dot {
-				width: 6px;
-				height: 6px;
-				border-radius: 50%;
-				background: #64748b;
-				flex-shrink: 0;
-				transition: background 0.4s;
-			}
-			.agent-status-dot.online { background: #22c55e; box-shadow: 0 0 5px #22c55e88; animation: dot-pulse 2s ease-in-out infinite; }
-			.agent-status-dot.fallback { background: #f59e0b; }
-			.agent-status-dot.offline { background: #ef4444; }
-			@keyframes dot-pulse {
-				0%, 100% { opacity: 1; }
-				50% { opacity: 0.55; }
-			}
-			.agent-close-btn {
-				background: none;
-				border: none;
-				color: var(--text-dim);
-				cursor: pointer;
-				font-size: 14px;
-				padding: 4px;
-				transition: color 0.2s;
-			}
-			.agent-close-btn:hover { color: var(--text); }
-			/* Messages area */
-			.agent-messages {
-				flex: 1;
-				overflow-y: auto;
-				padding: 12px 14px;
-				display: flex;
-				flex-direction: column;
-				gap: 10px;
-			}
-			.agent-bubble {
-				max-width: 88%;
-				padding: 10px 13px;
-				border-radius: 14px;
-				font-size: 12px;
-				line-height: 1.6;
-				animation: bubble-in 0.2s ease-out;
-			}
-			@keyframes bubble-in {
-				from { opacity: 0; transform: translateY(6px); }
-				to   { opacity: 1; transform: translateY(0); }
-			}
-			.agent-bubble.user {
-				align-self: flex-end;
-				background: linear-gradient(135deg, rgba(99,102,241,0.35), rgba(56,189,248,0.2));
-				border: 1px solid rgba(99,102,241,0.3);
-				color: var(--text);
-				border-bottom-right-radius: 4px;
-			}
-			.agent-bubble.assistant {
-				align-self: flex-start;
-				background: rgba(255,255,255,0.04);
-				border: 1px solid var(--border);
-				color: var(--text);
-				border-bottom-left-radius: 4px;
-			}
-			.agent-bubble.assistant code {
-				background: rgba(255,255,255,0.08);
-				padding: 1px 5px;
-				border-radius: 4px;
-				font-family: 'JetBrains Mono', monospace;
-				font-size: 11px;
-				color: var(--accent);
-			}
-			.agent-bubble .tool-badge {
+			/* ── AGENTIC CHAT UI (LM Studio style) ──── */
+			.mode-toggle-btn {
 				display: inline-flex;
 				align-items: center;
-				gap: 4px;
-				font-size: 9px;
-				padding: 2px 7px;
-				border-radius: 8px;
-				background: rgba(99,102,241,0.15);
-				color: #a5b4fc;
-				border: 1px solid rgba(99,102,241,0.2);
-				margin-bottom: 6px;
-			}
-			/* Typing indicator */
-			.agent-typing-wrapper {
-				display: flex;
-				flex-direction: column;
-				gap: 4px;
-				align-self: flex-start;
-			}
-			.agent-plan-text {
-				font-size: 10px;
-				color: var(--text-dim);
-				margin-left: 4px;
-				font-style: italic;
-				max-width: 200px;
-				white-space: nowrap;
-				overflow: hidden;
-				text-overflow: ellipsis;
-			}
-			.agent-typing {
-				display: flex;
-				align-items: center;
-				gap: 4px;
-				padding: 10px 13px;
-				background: rgba(255,255,255,0.04);
-				border: 1px solid var(--border);
-				border-radius: 14px;
-				border-bottom-left-radius: 4px;
-				align-self: flex-start;
-				max-width: 260px;
-			}
-			.typing-dot {
-				width: 6px;
-				height: 6px;
-				border-radius: 50%;
-				background: #6366f1;
-				animation: typing-bounce 1.2s ease-in-out infinite;
-			}
-			.typing-dot:nth-child(2) { animation-delay: 0.15s; }
-			.typing-dot:nth-child(3) { animation-delay: 0.3s; }
-			@keyframes typing-bounce {
-				0%, 60%, 100% { transform: translateY(0); opacity: 0.4; }
-				30% { transform: translateY(-5px); opacity: 1; }
-			}
-			/* Quick chips */
-			.agent-chips {
-				padding: 0 14px 8px;
-				display: flex;
-				gap: 6px;
-				flex-wrap: wrap;
-			}
-			.agent-chip {
-				font-size: 10px;
+				gap: 5px;
 				padding: 4px 10px;
-				border-radius: 20px;
-				background: rgba(99,102,241,0.1);
-				border: 1px solid rgba(99,102,241,0.25);
-				color: #a5b4fc;
-				cursor: pointer;
-				transition: all 0.15s;
-				white-space: nowrap;
-			}
-			.agent-chip:hover {
-				background: rgba(99,102,241,0.25);
-				border-color: rgba(99,102,241,0.5);
-			}
-			/* Inject form */
-			.agent-inject-form {
-				display: none;
-				padding: 8px 14px;
-				background: rgba(99,102,241,0.06);
-				border-top: 1px solid rgba(99,102,241,0.15);
-				gap: 6px;
-				flex-wrap: wrap;
-				align-items: center;
-			}
-			.agent-inject-form.visible { display: flex; }
-			.agent-inject-form input, .agent-inject-form select {
-				flex: 1;
-				min-width: 90px;
-				padding: 5px 8px;
-				background: rgba(0,0,0,0.3);
-				border: 1px solid rgba(99,102,241,0.3);
-				color: #fff;
 				border-radius: 6px;
-				font-size: 11px;
-				font-family: 'JetBrains Mono', monospace;
-				outline: none;
-			}
-			.agent-inject-form input:focus, .agent-inject-form select:focus {
-				border-color: #6366f1;
-			}
-			.agent-inject-form select option { background: #1e293b; }
-			.agent-inject-btn {
-				padding: 5px 12px;
-				border-radius: 6px;
-				border: none;
-				background: linear-gradient(135deg, #6366f1, #38bdf8);
-				color: #fff;
 				font-size: 11px;
 				font-weight: 600;
 				cursor: pointer;
-				transition: filter 0.15s;
-				font-family: inherit;
+				border: 1px solid rgba(139,92,246,0.3);
+				background: rgba(139,92,246,0.1);
+				color: #a78bfa;
+				transition: all 0.3s;
 			}
-			.agent-inject-btn:hover { filter: brightness(1.15); }
-			/* Input row */
-			.agent-input-row {
-				padding: 10px 14px 14px;
-				display: flex;
-				gap: 8px;
-				align-items: flex-end;
+			.mode-toggle-btn:hover { background: rgba(139,92,246,0.2); }
+			.mode-toggle-btn.active {
+				background: rgba(139,92,246,0.25);
+				border-color: rgba(139,92,246,0.5);
+				color: #c4b5fd;
 			}
-			.agent-input {
+
+			#agenticView {
+				display: none;
+				position: absolute;
+				top: var(--topbar-h);
+				left: 0; right: 0;
+				bottom: var(--bottombar-h);
+				background: var(--bg-primary);
+				z-index: 50;
+				flex-direction: column;
+			}
+			#agenticView.visible { display: flex; }
+
+			/* Chat message area */
+			.av-chat {
 				flex: 1;
-				background: rgba(255,255,255,0.05);
-				border: 1px solid rgba(99,102,241,0.25);
-				color: var(--text);
-				border-radius: 10px;
-				padding: 9px 12px;
-				font-size: 12px;
-				font-family: inherit;
-				resize: none;
-				outline: none;
-				transition: border-color 0.2s;
-				min-height: 38px;
-				max-height: 100px;
-				line-height: 1.5;
+				overflow-y: auto;
+				padding: 20px 0;
 			}
-			.agent-input:focus { border-color: rgba(99,102,241,0.45); }
-			.agent-input::placeholder { color: var(--text-dim); }
-			.agent-send-btn {
-				width: 34px;
-				height: 34px;
-				border-radius: 7px;
-				border: 1px solid rgba(99,102,241,0.28);
-				background: rgba(99,102,241,0.12);
-				color: #a5b4fc;
-				cursor: pointer;
+			.av-chat::-webkit-scrollbar { width: 5px; }
+			.av-chat::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.08); border-radius: 3px; }
+
+			.av-chat-inner {
+				max-width: 780px;
+				margin: 0 auto;
+				padding: 0 24px;
+			}
+
+			/* Messages */
+			.av-msg {
+				margin-bottom: 20px;
+				animation: avFadeIn 0.3s ease;
+			}
+			@keyframes avFadeIn { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: translateY(0); } }
+
+			.av-msg-header {
+				display: flex;
+				align-items: center;
+				gap: 8px;
+				margin-bottom: 8px;
+			}
+			.av-msg-avatar {
+				width: 28px; height: 28px;
+				border-radius: 8px;
 				display: flex;
 				align-items: center;
 				justify-content: center;
-				font-size: 12px;
-				transition: all 0.15s;
+				font-size: 13px;
 				flex-shrink: 0;
 			}
-			.agent-send-btn:hover { background: rgba(99,102,241,0.25); border-color: rgba(99,102,241,0.5); color: #fff; }
-			.agent-send-btn:active { transform: scale(0.94); }
-			.agent-send-btn:disabled { opacity: 0.3; cursor: not-allowed; }
-			.injected-line { animation: inject-flash 1s ease-in-out 3; }
-			@keyframes inject-flash {
-				0% { stroke-width: 4; stroke-opacity: 1; }
-				50% { stroke-width: 8; stroke-opacity: 0.8; }
-				100% { stroke-width: 4; stroke-opacity: 1; }
+			.av-msg.user .av-msg-avatar {
+				background: rgba(56,189,248,0.15);
+				color: var(--accent);
+			}
+			.av-msg.assistant .av-msg-avatar {
+				background: rgba(139,92,246,0.15);
+				color: #a78bfa;
+			}
+			.av-msg-name {
+				font-size: 13px;
+				font-weight: 600;
+				color: var(--text);
+			}
+			.av-msg-time {
+				font-size: 10px;
+				color: var(--text-dim);
+				margin-left: auto;
+			}
+			.av-msg-body {
+				padding-left: 36px;
+				font-size: 13.5px;
+				line-height: 1.7;
+				color: var(--text-muted);
+			}
+			.av-msg.user .av-msg-body { color: var(--text); }
+
+			/* Steps progress (inside response) */
+			.av-steps-block {
+				margin: 10px 0;
+				padding: 10px 14px;
+				background: rgba(139,92,246,0.06);
+				border: 1px solid rgba(139,92,246,0.12);
+				border-radius: 10px;
+			}
+			.av-steps-title {
+				font-size: 11px;
+				font-weight: 700;
+				text-transform: uppercase;
+				letter-spacing: 0.4px;
+				color: var(--text-dim);
+				margin-bottom: 6px;
+			}
+			.av-step {
+				display: flex;
+				align-items: center;
+				gap: 8px;
+				padding: 4px 0;
+				font-size: 12px;
+			}
+			.av-step-dot {
+				width: 18px; height: 18px;
+				border-radius: 5px;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+				font-size: 9px;
+				flex-shrink: 0;
+			}
+			.av-step-dot.ok { background: rgba(34,197,94,0.15); color: var(--success); }
+			.av-step-dot.err { background: rgba(239,68,68,0.15); color: var(--danger); }
+			.av-step-dot.run { background: rgba(56,189,248,0.15); color: var(--accent); animation: pulse-dot 1.2s infinite; }
+			.av-step-name { color: var(--text); font-weight: 500; }
+			.av-step-tool { font-family: 'JetBrains Mono', monospace; font-size: 10px; color: #a78bfa; margin-left: auto; }
+
+			/* Verdict card (inside response) */
+			.av-verdict-card {
+				margin: 12px 0;
+				padding: 16px;
+				border-radius: 12px;
+				border: 1px solid rgba(139,92,246,0.2);
+				background: rgba(139,92,246,0.06);
+			}
+			.av-verdict-row {
+				display: flex;
+				align-items: center;
+				gap: 14px;
+			}
+			.av-verdict-badge {
+				font-size: 13px;
+				font-weight: 800;
+				padding: 4px 14px;
+				border-radius: 8px;
+			}
+			.av-verdict-conf {
+				font-size: 28px;
+				font-weight: 800;
+				font-family: 'JetBrains Mono', monospace;
+				background: linear-gradient(135deg, #7c3aed, #38bdf8);
+				-webkit-background-clip: text;
+				-webkit-text-fill-color: transparent;
+			}
+			.av-verdict-summary {
+				font-size: 13px;
+				color: var(--text-muted);
+				margin-top: 10px;
+				line-height: 1.6;
+			}
+			.av-evidence {
+				margin-top: 10px;
+				padding-top: 10px;
+				border-top: 1px solid rgba(255,255,255,0.05);
+			}
+			.av-evidence-item {
+				font-size: 12px;
+				color: var(--text-dim);
+				padding: 2px 0 2px 16px;
+				position: relative;
+			}
+			.av-evidence-item::before {
+				content: '▸';
+				position: absolute;
+				left: 0;
+				color: #a78bfa;
 			}
 
-
-			/* ── RESPONSIVE / MOBILE ───────────────────────────── */
-			/* Sidebar overlay backdrop (mobile only) */
-			.sidebar-overlay {
-				display: none;
-				position: fixed;
-				inset: 0;
-				background: rgba(0,0,0,0.5);
-				z-index: 49;
-				backdrop-filter: blur(2px);
+			/* Embedded map (inside response) */
+			.av-map-embed {
+				margin: 12px 0;
+				border-radius: 12px;
+				overflow: hidden;
+				border: 1px solid var(--border);
+				height: 300px;
+				position: relative;
 			}
-			.sidebar-overlay.active { display: block; }
-
-			/* Mobile hamburger — only shown on small screens */
-			#btnMobileMenu {
-				display: none;
-			}
-
-			@media (max-width: 767px) {
-				:root {
-					--sidebar-w: 300px;
-					--topbar-h: 48px;
-					--bottombar-h: 40px;
-				}
-
-				/* Topbar: hide text labels, show icons only */
-				#btnSidebar { display: none; }
-				#btnMobileMenu { display: flex; }
-				.top-btn span.btn-label { display: none; }
-				#btnAnalytics .fa-chart-pie + * { display: none; }
-				.brand small { display: none; }
-				#sessionTimer { font-size: 10px; }
-
-				/* Sidebar: overlay on mobile — default HIDDEN (collapsed by default on mobile) */
-				.sidebar {
-					z-index: 60;
-					transform: translateX(calc(-1 * var(--sidebar-w)));
-				}
-				.sidebar.mobile-open {
-					transform: translateX(0) !important;
-				}
-				/* On mobile, map is always full width */
-				#map {
-					left: 0 !important;
-					transition: none;
-				}
-				/* Disable the desktop collapsed~map rule on mobile by overriding */
-				.sidebar.collapsed ~ #map {
-					left: 0;
-				}
-
-				/* Agent panel: full screen on mobile */
-				.agent-panel {
-					right: 0;
-					left: 0;
-					bottom: var(--bottombar-h);
-					width: 100%;
-					height: 65vh;
-					border-radius: 18px 18px 0 0;
-				}
-				.agent-fab {
-					right: 12px;
-					bottom: calc(var(--bottombar-h) + 12px);
-					width: 44px;
-					height: 44px;
-					font-size: 18px;
-				}
-
-				/* Bottombar: compact, fewer metrics visible */
-				.bottombar {
-					gap: 10px;
-					padding: 0 10px;
-					font-size: 10px;
-					overflow-x: auto;
-				}
-				.bottombar .metric:nth-child(3) { display: none; } /* hide bandwidth on mobile */
-
-				/* Topbar compact */
-				.topbar { padding: 0 10px; }
-				.topbar-right { gap: 4px; }
-				.top-btn { padding: 5px 10px; font-size: 11px; }
-
-				/* Packet table: horizontal scroll */
-				.packet-table-wrap {
-					overflow-x: auto;
-					-webkit-overflow-scrolling: touch;
-				}
-				.packet-table {
-					min-width: 600px;
-				}
-
-				/* Overlay panels: full width on mobile */
-				.overlay-panel {
-					left: 0 !important;
-					right: 0 !important;
-					width: 100% !important;
-					max-height: 80vh;
-					border-radius: 16px 16px 0 0;
-				}
-
-				/* VPN detail modal */
-				.vpn-detail-content {
-					max-width: 95vw;
-					margin: 0 auto;
-				}
+			.av-map-embed .leaflet-container { height: 100%; width: 100%; }
+			.av-map-label {
+				position: absolute;
+				top: 8px; left: 8px;
+				z-index: 1000;
+				background: rgba(10,14,26,0.85);
+				color: var(--text-muted);
+				font-size: 10px;
+				font-weight: 600;
+				padding: 3px 8px;
+				border-radius: 4px;
+				text-transform: uppercase;
+				letter-spacing: 0.3px;
 			}
 
-			@media (min-width: 768px) and (max-width: 1023px) {
-				:root {
-					--sidebar-w: 280px;
-				}
-				.agent-panel {
-					width: 360px;
-				}
-				.top-btn { padding: 5px 10px; font-size: 11px; }
+			/* Stats card (inside response) */
+			.av-stats-grid {
+				display: grid;
+				grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+				gap: 8px;
+				margin: 10px 0;
+			}
+			.av-stat-card {
+				padding: 10px 12px;
+				background: rgba(255,255,255,0.03);
+				border: 1px solid var(--border);
+				border-radius: 8px;
+			}
+			.av-stat-label {
+				font-size: 10px;
+				color: var(--text-dim);
+				text-transform: uppercase;
+				letter-spacing: 0.3px;
+			}
+			.av-stat-value {
+				font-size: 18px;
+				font-weight: 700;
+				color: var(--text);
+				font-family: 'JetBrains Mono', monospace;
+				margin-top: 2px;
 			}
 
-			@media (max-width: 480px) {
-				.brand { font-size: 13px; }
-				.top-btn { padding: 5px 8px; }
-				/* Stack analytics label text */
-				#btnAnalytics { padding: 5px 8px; }
-				#btnVpn span.btn-label { display: none; }
+			/* Footer / duration */
+			.av-footer-line {
+				font-size: 10px;
+				color: var(--text-dim);
+				margin-top: 8px;
+				padding-top: 6px;
+				border-top: 1px solid rgba(255,255,255,0.04);
+			}
+
+			/* Input bar */
+			.av-input-bar {
+				padding: 14px 24px 18px;
+				border-top: 1px solid var(--border);
+				background: var(--bg-primary);
+			}
+			.av-input-inner {
+				max-width: 780px;
+				margin: 0 auto;
+				display: flex;
+				gap: 10px;
+			}
+			.av-input {
+				flex: 1;
+				padding: 12px 16px;
+				border-radius: 12px;
+				border: 1px solid var(--border);
+				background: var(--bg-glass);
+				color: var(--text);
+				font-size: 14px;
+				font-family: inherit;
+				outline: none;
+				transition: border-color 0.3s;
+			}
+			.av-input:focus { border-color: rgba(139,92,246,0.4); }
+			.av-input::placeholder { color: var(--text-dim); }
+			.av-send-btn {
+				width: 44px; height: 44px;
+				border-radius: 12px;
+				border: none;
+				background: linear-gradient(135deg, #7c3aed, #6366f1);
+				color: white;
+				font-size: 16px;
+				cursor: pointer;
+				transition: all 0.2s;
+				display: flex;
+				align-items: center;
+				justify-content: center;
+			}
+			.av-send-btn:hover { filter: brightness(1.15); transform: translateY(-1px); }
+			.av-send-btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+			/* Welcome message */
+			.av-welcome {
+				text-align: center;
+				padding: 60px 20px;
+				color: var(--text-dim);
+			}
+			.av-welcome-icon {
+				font-size: 40px;
+				margin-bottom: 16px;
+				background: linear-gradient(135deg, #7c3aed, #38bdf8);
+				-webkit-background-clip: text;
+				-webkit-text-fill-color: transparent;
+			}
+			.av-welcome h2 {
+				font-size: 20px;
+				font-weight: 700;
+				color: var(--text);
+				margin-bottom: 8px;
+			}
+			.av-welcome p {
+				font-size: 13px;
+				max-width: 420px;
+				margin: 0 auto 16px;
+				line-height: 1.6;
+			}
+			.av-chips {
+				display: flex;
+				flex-wrap: wrap;
+				gap: 8px;
+				justify-content: center;
+			}
+			.av-chip {
+				padding: 6px 14px;
+				border-radius: 20px;
+				border: 1px solid var(--border);
+				background: rgba(255,255,255,0.03);
+				color: var(--text-muted);
+				font-size: 12px;
+				cursor: pointer;
+				transition: all 0.2s;
+			}
+			.av-chip:hover {
+				background: rgba(139,92,246,0.1);
+				border-color: rgba(139,92,246,0.3);
+				color: #a78bfa;
+			}
+
+			/* Model selector */
+			.av-model-bar {
+				max-width: 780px;
+				margin: 0 auto;
+				padding: 0 0 8px;
+				display: flex;
+				align-items: center;
+				gap: 8px;
+				flex-wrap: wrap;
+			}
+			.av-model-label {
+				font-size: 10px;
+				font-weight: 600;
+				text-transform: uppercase;
+				letter-spacing: 0.4px;
+				color: var(--text-dim);
+			}
+			.av-model-opt {
+				padding: 4px 12px;
+				border-radius: 16px;
+				border: 1px solid var(--border);
+				background: rgba(255,255,255,0.03);
+				color: var(--text-muted);
+				font-size: 11px;
+				font-weight: 500;
+				cursor: pointer;
+				transition: all 0.2s;
+				display: inline-flex;
+				align-items: center;
+				gap: 5px;
+			}
+			.av-model-opt:hover {
+				background: rgba(139,92,246,0.08);
+				border-color: rgba(139,92,246,0.25);
+			}
+			.av-model-opt.active {
+				background: rgba(139,92,246,0.15);
+				border-color: rgba(139,92,246,0.4);
+				color: #c4b5fd;
+			}
+			.av-model-dot {
+				width: 6px; height: 6px;
+				border-radius: 50%;
+				flex-shrink: 0;
+			}
+			.av-model-dot.green { background: #22c55e; }
+			.av-model-dot.amber { background: #f59e0b; }
+			.av-model-dot.gray { background: #64748b; }
+			.av-model-status {
+				margin-left: auto;
+				font-size: 10px;
+				color: var(--text-dim);
+			}
+
+			@media (max-width: 768px) {
+				.av-chat-inner, .av-input-inner { padding: 0 14px; }
+				.av-map-embed { height: 220px; }
+				.av-stats-grid { grid-template-columns: 1fr 1fr; }
 			}
 		</style>
 	</head>
@@ -1354,8 +1291,8 @@
 				<button id="btnMobileMenu" class="top-btn" onclick="toggleMobileSidebar()" title="Menu">
 					<i class="fa-solid fa-bars"></i>
 				</button>
-				<button id="btnAgent" class="top-btn" onclick="toggleOverlay('agentPanel')">
-					<i class="fa-solid fa-robot"></i> Agent
+				<button id="btnAgenticMode" class="mode-toggle-btn" onclick="toggleAgenticView()">
+					<i class="fa-solid fa-wand-magic-sparkles"></i> Agentic AI
 				</button>
 				<button
 					id="btnSidebar"
@@ -1764,112 +1701,55 @@
 			</div>
 		</div>
 
-		<!-- ═══ AGENT CHAT PANEL ═══ -->
-		<div id="agentPanel" class="agent-panel">
-			<!-- Header -->
-			<div class="agent-header">
-				<div class="agent-header-icon">
-					<i class="fa-solid fa-microchip"></i>
-				</div>
-				<div class="agent-title-block">
-					<div class="agent-title">PacketSense AI</div>
-					<div class="agent-subtitle" id="agentStatusLine">Initializing...</div>
-				</div>
-				<span class="agent-model-badge" id="agentModelBadge">
-					<span class="agent-status-dot" id="agentStatusDot"></span>
-					<span id="agentModelText">connecting</span>
-				</span>
-				<button class="agent-close-btn" onclick="toggleAgentPanel()" title="Close">
-					<i class="fa-solid fa-xmark"></i>
-				</button>
-			</div>
-
-			<!-- Message area -->
-			<div id="agentMessages" class="agent-messages">
-				<!-- Welcome bubble -->
-				<div class="agent-bubble assistant" id="agentWelcomeBubble">
-					<div class="tool-badge"><i class="fa-solid fa-circle-info"></i>&nbsp;PacketSense AI</div>
-					<div>Intelligent network analyst with multi-step reasoning. I can analyse traffic, detect VPNs, scan threats, profile device behaviour, and answer general networking questions.</div>
-					<div style="margin-top:7px;color:var(--text-dim);font-size:11px">Select a quick action below or type a message.</div>
+		<!-- ═══ AGENTIC CHAT VIEW ═══ -->
+		<div id="agenticView">
+			<!-- Scrollable chat area -->
+			<div class="av-chat" id="avChat">
+				<div class="av-chat-inner" id="avChatInner">
+					<!-- Welcome -->
+					<div class="av-welcome" id="avWelcome">
+						<div class="av-welcome-icon"><i class="fa-solid fa-wand-magic-sparkles"></i></div>
+						<h2>PacketSense AI Agent</h2>
+						<p>Autonomous network analysis powered by ReAct + tool-use. Ask me to capture traffic, detect VPNs, scan threats, trace IPs, or investigate anything on your network.</p>
+						<div class="av-chips">
+							<span class="av-chip" onclick="avQuick('Capture traffic for 20 seconds and detect VPN usage')"><i class="fa-solid fa-satellite-dish"></i>&nbsp; Capture &amp; Classify</span>
+							<span class="av-chip" onclick="avQuick('Analyse current traffic and determine if VPN is in use')"><i class="fa-solid fa-search"></i>&nbsp; Investigate VPN</span>
+							<span class="av-chip" onclick="avQuick('Show network statistics and traffic summary')"><i class="fa-solid fa-chart-bar"></i>&nbsp; Network Stats</span>
+							<span class="av-chip" onclick="avQuick('Scan for threats and check suspicious IPs')"><i class="fa-solid fa-shield-halved"></i>&nbsp; Threat Scan</span>
+							<span class="av-chip" onclick="avQuick('List available capture interfaces')"><i class="fa-solid fa-ethernet"></i>&nbsp; Interfaces</span>
+							<span class="av-chip" onclick="avQuick('Show top talkers on the network')"><i class="fa-solid fa-ranking-star"></i>&nbsp; Top Talkers</span>
+						</div>
+					</div>
 				</div>
 			</div>
 
-			<!-- Quick action chips -->
-			<div class="agent-chips" id="agentChips">
-				<span class="agent-chip" onclick="agentSendChip('Scan for anomalies')">
-					<i class="fa-solid fa-magnifying-glass"></i> Scan
-				</span>
-				<span class="agent-chip" onclick="agentSendChip('Analyze traffic patterns')">
-					<i class="fa-solid fa-chart-bar"></i> Traffic
-				</span>
-				<span class="agent-chip" onclick="agentSendChip('Threat intelligence summary')">
-					<i class="fa-solid fa-shield-halved"></i> Threats
-				</span>
-				<span class="agent-chip" onclick="agentSendChip('Show VPN detections')">
-					<i class="fa-solid fa-lock"></i> VPN
-				</span>
-				<span class="agent-chip" onclick="agentSendChip('Behaviour summary for all devices')">
-					<i class="fa-solid fa-brain"></i> Behaviour
-				</span>
-				<span class="agent-chip" onclick="agentSendChip('Bandwidth analysis')">
-					<i class="fa-solid fa-wave-square"></i> Bandwidth
-				</span>
-				<span class="agent-chip" onclick="agentSendChip('Show capture stats')">
-					<i class="fa-solid fa-gauge-high"></i> Stats
-				</span>
-				<span class="agent-chip" onclick="agentSendChip('Current session info')">
-					<i class="fa-solid fa-circle-info"></i> Session
-				</span>
-				<span class="agent-chip" onclick="agentSendChip('Top talkers by traffic')">
-					<i class="fa-solid fa-arrow-up-wide-short"></i> Talkers
-				</span>
-				<span class="agent-chip" onclick="agentSendChip('Export session report')">
-					<i class="fa-solid fa-file-export"></i> Report
-				</span>
-				<span class="agent-chip" onclick="agentSendChip('List available capture interfaces')">
-					<i class="fa-solid fa-ethernet"></i> Interfaces
-				</span>
-				<span class="agent-chip" onclick="toggleInjectForm()">
-					<i class="fa-solid fa-location-dot"></i> Map Inject
-				</span>
-			</div>
-
-			<!-- Map inject form -->
-			<div class="agent-inject-form" id="agentInjectForm">
-				<input id="injectSrc" type="text" placeholder="Source IP" />
-				<input id="injectDst" type="text" placeholder="Destination IP" />
-				<select id="injectProto">
-					<option value="TCP">TCP</option>
-					<option value="UDP">UDP</option>
-					<option value="ICMP">ICMP</option>
-				</select>
-				<button class="agent-inject-btn" onclick="agentInjectPacket()">
-					<i class="fa-solid fa-location-dot"></i> Plot
-				</button>
-			</div>
-
-			<!-- Input row -->
-			<div class="agent-input-divider"></div>
-			<div class="agent-input-row">
-				<textarea
-					id="agentInput"
-					class="agent-input"
-					placeholder="Ask about your network traffic..."
-					rows="1"
-					onkeydown="agentHandleKey(event)"
-					oninput="this.style.height='auto';this.style.height=Math.min(this.scrollHeight,96)+'px'"
-				></textarea>
-				<button id="agentSendBtn" class="agent-send-btn" onclick="agentSend()" title="Send">
-					<i class="fa-solid fa-paper-plane"></i>
-				</button>
+			<!-- Input bar -->
+			<div class="av-input-bar">
+				<div class="av-model-bar" id="avModelBar">
+					<span class="av-model-label">Model</span>
+					<button class="av-model-opt active" data-provider="auto" onclick="avSelectProvider(this)">
+						<span class="av-model-dot green"></span> Auto
+					</button>
+					<button class="av-model-opt" data-provider="ollama" onclick="avSelectProvider(this)">
+						<span class="av-model-dot green"></span> Ollama · <span id="avOllamaModel">phi4-mini</span>
+					</button>
+					<button class="av-model-opt" data-provider="openrouter" onclick="avSelectProvider(this)">
+						<span class="av-model-dot amber"></span> OpenRouter
+					</button>
+					<span class="av-model-status" id="avModelStatus">checking...</span>
+				</div>
+				<div class="av-input-inner">
+					<input type="text" class="av-input" id="avInput"
+						placeholder="Ask PacketSense to capture, analyse, detect VPN, scan threats..."
+						onkeydown="if(event.key==='Enter'&&!event.shiftKey)avSend()" />
+					<button class="av-send-btn" id="avSendBtn" onclick="avSend()" title="Send">
+						<i class="fa-solid fa-arrow-up"></i>
+					</button>
+				</div>
 			</div>
 		</div>
+		</div>
 
-		<!-- Agent FAB -->
-		<button class="agent-fab top-btn" id="agentFab" onclick="toggleAgentPanel()" title="PacketSense AI Agent">
-			<i class="fa-solid fa-microchip"></i>
-			<span>AI Agent</span>
-		</button>
 
 		<!-- ═══ BOTTOM BAR ═══ -->
 		<div class="bottombar">
@@ -2903,220 +2783,328 @@
 			// ================================================================
 			// AGENT CHAT
 			// ================================================================
-			let agentOpen = false;
-			let agentHistory = [];
-			let agentBusy = false;
 			let agentInjectLines = [];
+			let avIsOpen = false;
+			let avRunning = false;
+			let avMapCounter = 0;
+			let avSelectedProvider = 'auto';
 
-			function toggleAgentPanel() {
-				agentOpen = !agentOpen;
-				const panel = document.getElementById('agentPanel');
-				const btn = document.getElementById('btnAgent');
-				if (agentOpen) {
-					panel.classList.add('open');
+			// ── AGENTIC CHAT VIEW ──────────────────────────────────────
+			function toggleAgenticView() {
+				avIsOpen = !avIsOpen;
+				const view = document.getElementById('agenticView');
+				const btn = document.getElementById('btnAgenticMode');
+				const sidebar = document.getElementById('sidebar');
+				const mapEl = document.getElementById('map');
+				if (avIsOpen) {
+					view.classList.add('visible');
 					btn.classList.add('active');
-					document.getElementById('agentInput').focus();
-					if (agentHistory.length === 0) agentCheckStatus();
+					if (sidebar) sidebar.style.display = 'none';
+					if (mapEl) mapEl.style.display = 'none';
+					avCheckProviders();
+					document.getElementById('avInput').focus();
 				} else {
-					panel.classList.remove('open');
+					view.classList.remove('visible');
 					btn.classList.remove('active');
+					if (sidebar) sidebar.style.display = '';
+					if (mapEl) mapEl.style.display = '';
+					setTimeout(() => { if (window.map) map.invalidateSize(); }, 100);
 				}
 			}
 
-			async function agentCheckStatus() {
+			function avQuick(text) {
+				document.getElementById('avInput').value = text;
+				avSend();
+			}
+
+			function avSelectProvider(el) {
+				avSelectedProvider = el.dataset.provider;
+				document.querySelectorAll('.av-model-opt').forEach(b => b.classList.remove('active'));
+				el.classList.add('active');
+			}
+
+			async function avCheckProviders() {
 				try {
 					const res = await fetch('/api/agent/status');
-					const d = await res.json();
-					const statusEl = document.getElementById('agentStatusLine');
-					const modelTextEl = document.getElementById('agentModelText');
-					const dotEl = document.getElementById('agentStatusDot');
-					const toolCount = d.tool_count || 22;
-					const steps = d.max_steps || 4;
+					const s = await res.json();
 
-					// Dot + badge color
-					const ollama = d.ollama || {};
-					if (ollama.reachable) {
-						dotEl.className = 'agent-status-dot online';
-						modelTextEl.textContent = `ollama · ${ollama.model}`;
-						statusEl.textContent = `Ollama · ${toolCount} tools · ${steps}-step ReAct`;
-						statusEl.style.color = 'var(--success)';
-					} else if (d.openrouter && d.openrouter.configured) {
-						dotEl.className = 'agent-status-dot fallback';
-						modelTextEl.textContent = `openrouter · ${d.model}`;
-						statusEl.textContent = `OpenRouter fallback · ${toolCount} tools`;
-						statusEl.style.color = 'var(--switch-color)';
-					} else {
-						dotEl.className = 'agent-status-dot offline';
-						modelTextEl.textContent = 'regex-fallback';
-						statusEl.textContent = `Regex fallback · ${toolCount} tools · offline`;
-						statusEl.style.color = 'var(--danger)';
+					// Update Ollama dot + model name
+					const olBtn = document.querySelector('[data-provider="ollama"]');
+					if (olBtn) {
+						const dot = olBtn.querySelector('.av-model-dot');
+						if (s.ollama && s.ollama.reachable) {
+							dot.className = 'av-model-dot green';
+						} else {
+							dot.className = 'av-model-dot gray';
+						}
+						const modelSpan = document.getElementById('avOllamaModel');
+						if (modelSpan && s.ollama) modelSpan.textContent = s.ollama.model || 'phi4-mini';
 					}
-				} catch(e) {
-					document.getElementById('agentStatusLine').textContent = 'Agent unavailable';
-					const dotEl = document.getElementById('agentStatusDot');
-					if (dotEl) dotEl.className = 'agent-status-dot offline';
+
+					// Update OpenRouter dot
+					const orBtn = document.querySelector('[data-provider="openrouter"]');
+					if (orBtn) {
+						const dot = orBtn.querySelector('.av-model-dot');
+						if (s.openrouter && s.openrouter.configured) {
+							dot.className = 'av-model-dot amber';
+						} else {
+							dot.className = 'av-model-dot gray';
+						}
+					}
+
+					// Status text
+					const statusEl = document.getElementById('avModelStatus');
+					if (statusEl) {
+						const parts = [];
+						if (s.ollama && s.ollama.reachable) parts.push('ollama ✓');
+						else parts.push('ollama ✗');
+						if (s.openrouter && s.openrouter.configured) parts.push('openrouter ✓');
+						else parts.push('openrouter ✗');
+						statusEl.textContent = parts.join(' · ');
+					}
+				} catch (e) {
+					const statusEl = document.getElementById('avModelStatus');
+					if (statusEl) statusEl.textContent = 'offline';
 				}
 			}
 
-			function toggleInjectForm() {
-				const form = document.getElementById('agentInjectForm');
-				form.classList.toggle('visible');
-				if (form.classList.contains('visible')) {
-					document.getElementById('injectSrc').focus();
+			function avAddMsg(role, html) {
+				const welcome = document.getElementById('avWelcome');
+				if (welcome) welcome.style.display = 'none';
+
+				const container = document.getElementById('avChatInner');
+				const chat = document.getElementById('avChat');
+				const div = document.createElement('div');
+				div.className = 'av-msg ' + role;
+
+				const icon = role === 'user' ? 'fa-user' : 'fa-microchip';
+				const name = role === 'user' ? 'You' : 'PacketSense Agent';
+				const time = new Date().toLocaleTimeString([], {hour:'2-digit',minute:'2-digit'});
+
+				div.innerHTML = '<div class="av-msg-header">' +
+					'<div class="av-msg-avatar"><i class="fa-solid ' + icon + '"></i></div>' +
+					'<div class="av-msg-name">' + name + '</div>' +
+					'<div class="av-msg-time">' + time + '</div>' +
+					'</div>' +
+					'<div class="av-msg-body">' + html + '</div>';
+				container.appendChild(div);
+				chat.scrollTop = chat.scrollHeight;
+				return div;
+			}
+
+			function avRenderSteps(steps) {
+				if (!steps || steps.length === 0) return '';
+				let h = '<div class="av-steps-block"><div class="av-steps-title"><i class="fa-solid fa-code-branch"></i> ReAct Loop (' + steps.length + ' steps)</div>';
+				steps.forEach((s, i) => {
+					const cls = s.status === 'error' ? 'err' : 'ok';
+					const ic = s.status === 'error' ? 'fa-xmark' : 'fa-check';
+					h += '<div class="av-step">' +
+						'<div class="av-step-dot ' + cls + '"><i class="fa-solid ' + ic + '"></i></div>' +
+						'<span class="av-step-name">Step ' + (i+1) + ': ' + (s.summary || s.tool) + '</span>' +
+						'<span class="av-step-tool">' + s.tool + '</span>' +
+						'</div>';
+				});
+				h += '</div>';
+				return h;
+			}
+
+			function avRenderVerdict(verdict) {
+				if (!verdict || !verdict.verdict) return '';
+				const colors = { VPN:'#ef4444', LIKELY_VPN:'#f59e0b', SUSPICIOUS:'#f59e0b', NON_VPN:'#22c55e', INCONCLUSIVE:'#64748b', INFO:'#38bdf8' };
+				const c = colors[verdict.verdict] || '#64748b';
+				let h = '<div class="av-verdict-card">';
+				h += '<div class="av-verdict-row">';
+				h += '<span class="av-verdict-badge" style="background:' + c + '20;color:' + c + ';border:1px solid ' + c + '40">' + verdict.verdict + '</span>';
+				if (verdict.confidence > 0) h += '<span class="av-verdict-conf">' + verdict.confidence + '%</span>';
+				h += '</div>';
+				if (verdict.summary) h += '<div class="av-verdict-summary">' + verdict.summary + '</div>';
+				if (verdict.evidence && verdict.evidence.length > 0) {
+					h += '<div class="av-evidence">';
+					verdict.evidence.forEach(e => { h += '<div class="av-evidence-item">' + e + '</div>'; });
+					h += '</div>';
 				}
+				h += '</div>';
+				return h;
 			}
 
-			function agentHandleKey(e) {
-				if (e.key === 'Enter' && !e.shiftKey) {
-					e.preventDefault();
-					agentSend();
-				}
+			function avRenderMap(mapAction) {
+				if (!mapAction) return '';
+				avMapCounter++;
+				const mapId = 'avMiniMap_' + avMapCounter;
+				const h = '<div class="av-map-embed"><div class="av-map-label"><i class="fa-solid fa-map-location-dot"></i> Network Map</div><div id="' + mapId + '" style="height:100%;width:100%"></div></div>';
+
+				// Initialize the mini-map after DOM insertion
+				setTimeout(() => {
+					const el = document.getElementById(mapId);
+					if (!el) return;
+					const miniMap = L.map(mapId, { zoomControl: false, attributionControl: false }).setView([20, 0], 2);
+					L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+						subdomains: 'abcd', maxZoom: 19
+					}).addTo(miniMap);
+
+					// Plot the action data
+					const data = mapAction;
+					if (data.type === 'inject_packet' && data.source && data.destination) {
+						const src = data.source, dst = data.destination;
+						[src, dst].forEach(loc => {
+							if (!loc.lat || !loc.lon) return;
+							const c = loc.is_vpn ? '#ef4444' : '#38bdf8';
+							const m = L.circleMarker([loc.lat, loc.lon], {
+								radius: 7, fillColor: c, color: 'rgba(255,255,255,0.3)',
+								weight: 5, opacity: 0.3, fillOpacity: 0.95
+							}).addTo(miniMap);
+							const vpnTag = loc.is_vpn ? '<span style="color:#ef4444;font-weight:700">⛔ VPN</span><br>' : '';
+							m.bindPopup('<div style="color:#000;font-size:11px">' + vpnTag + '<b>' + loc.ip + '</b><br>' + (loc.city||'') + ', ' + (loc.country||'') + '<br>' + (loc.isp||'') + '</div>');
+						});
+						if (src.lat && dst.lat) {
+							L.polyline([[src.lat, src.lon], [dst.lat, dst.lon]], {
+								color: '#a78bfa', weight: 2, opacity: 0.6, dashArray: '8,6'
+							}).addTo(miniMap);
+							miniMap.fitBounds([[src.lat, src.lon], [dst.lat, dst.lon]], { padding: [40, 40] });
+						}
+					}
+					// Also plot on the main map
+					if (typeof agentPlotOnMap === 'function') agentPlotOnMap(data);
+				}, 200);
+
+				return h;
 			}
 
-			function agentSendChip(text) {
-				document.getElementById('agentInput').value = text;
-				agentSend();
+			function avRenderStats(toolResult) {
+				if (!toolResult || typeof toolResult !== 'object') return '';
+				// Try to render key stats from tool_result
+				const keys = Object.keys(toolResult);
+				if (keys.length === 0) return '';
+				// Filter to numeric/string values for display
+				const stats = keys.filter(k => typeof toolResult[k] === 'number' || typeof toolResult[k] === 'string').slice(0, 8);
+				if (stats.length === 0) return '';
+				let h = '<div class="av-stats-grid">';
+				stats.forEach(k => {
+					const label = k.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+					const val = typeof toolResult[k] === 'number' ? toolResult[k].toLocaleString() : toolResult[k];
+					h += '<div class="av-stat-card"><div class="av-stat-label">' + label + '</div><div class="av-stat-value">' + val + '</div></div>';
+				});
+				h += '</div>';
+				return h;
 			}
 
-			async function agentInjectPacket() {
-				const src = document.getElementById('injectSrc').value.trim();
-				const dst = document.getElementById('injectDst').value.trim();
-				const proto = document.getElementById('injectProto').value;
-				if (!src || !dst) {
-					agentAppendBubble('assistant', '⚠️ Please enter both source and destination IPs.', null);
-					return;
-				}
-				const msg = `Inject packet from ${src} to ${dst} using ${proto}`;
-				document.getElementById('agentInput').value = msg;
-				document.getElementById('agentInjectForm').classList.remove('visible');
-				agentSend();
+			function avFormatText(text) {
+				if (!text) return '';
+				// Basic markdown-ish formatting
+				let h = text
+					.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+					.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
+					.replace(/\*(.+?)\*/g, '<em>$1</em>')
+					.replace(/`(.+?)`/g, '<code style="background:rgba(139,92,246,0.1);padding:1px 5px;border-radius:3px;font-family:JetBrains Mono,monospace;font-size:12px">$1</code>')
+					.replace(/\n/g, '<br>');
+				return h;
 			}
 
-			async function agentSend() {
-				const input = document.getElementById('agentInput');
-				const message = input.value.trim();
-				if (!message || agentBusy) return;
-
-				agentBusy = true;
+			async function avSend() {
+				const input = document.getElementById('avInput');
+				const query = input.value.trim();
+				if (!query || avRunning) return;
 				input.value = '';
-				input.style.height = 'auto';
-				document.getElementById('agentSendBtn').disabled = true;
 
-				// Add user bubble
-				agentAppendBubble('user', message, null, false);
-				agentHistory.push({ role: 'user', content: message });
+				// User message
+				avAddMsg('user', avFormatText(query));
 
-				// Show typing indicator
-				const typingEl = agentShowTyping('Thinking…');
+				// Loading message
+				avRunning = true;
+				document.getElementById('avSendBtn').disabled = true;
+				const loadingMsg = avAddMsg('assistant',
+					'<div style="display:flex;align-items:center;gap:8px;color:var(--text-dim)">' +
+					'<i class="fa-solid fa-spinner fa-spin"></i> Investigating...</div>');
 
 				try {
 					const res = await fetch('/api/agent/chat', {
 						method: 'POST',
 						headers: { 'Content-Type': 'application/json' },
-						body: JSON.stringify({ message, history: agentHistory.slice(-8) }),
+						body: JSON.stringify({ message: query, history: [], agentic: true, provider: avSelectedProvider }),
 					});
 					const data = await res.json();
 
-					agentHideTyping(typingEl);
+					// Build rich response
+					let html = '';
 
 					if (data.error) {
-						agentAppendBubble('assistant', `⚠️ ${data.error}`, null, false);
+						html = '<div style="color:var(--danger)"><i class="fa-solid fa-triangle-exclamation"></i> ' + data.error + '</div>';
 					} else {
-						const isChatMode = data.mode === 'chat';
-						const chain = data.tools_chain || [data.tool_used];
-						const toolLabel = chain.length > 1
-							? chain.join(' → ')
-							: data.tool_used;
-						agentAppendBubble('assistant', data.reply, toolLabel, isChatMode);
-						agentHistory.push({ role: 'assistant', content: data.reply });
+						// 1. Steps
+						html += avRenderSteps(data.steps_detail);
 
-						// Live-update provider badge from response
-						if (data.provider && data.model && data.provider !== 'regex-fallback') {
-							const modelTextEl = document.getElementById('agentModelText');
-							const dotEl = document.getElementById('agentStatusDot');
-							if (modelTextEl) modelTextEl.textContent = `${data.provider} · ${data.model.split('/').pop()}`;
-							if (dotEl) dotEl.className = data.provider === 'ollama' ? 'agent-status-dot online' : 'agent-status-dot fallback';
+						// 2. Verdict card
+						if (data.verdict) html += avRenderVerdict(data.verdict);
+
+						// 3. Map embed
+						if (data.map_action && data.map_action.type) html += avRenderMap(data.map_action);
+
+						// 4. Stats from tool_result
+						if (data.tool_result && typeof data.tool_result === 'object') {
+							html += avRenderStats(data.tool_result);
 						}
 
-						// Handle map action
-						if (data.map_action && data.map_action.type === 'inject_packet') {
-							agentPlotOnMap(data.map_action);
+						// 5. Reply text
+						if (data.reply) {
+							html += '<div style="margin-top:10px">' + avFormatText(data.reply) + '</div>';
 						}
+
+						// 6. Footer
+						html += '<div class="av-footer-line">' +
+							(data.steps || 0) + ' steps · ' +
+							(data.duration_seconds || 0) + 's · ' +
+							(data.model || '?') + ' · ' +
+							(data.provider || '?') +
+							'</div>';
+					}
+
+					// Replace loading message
+					const body = loadingMsg.querySelector('.av-msg-body');
+					body.innerHTML = html;
+					document.getElementById('avChat').scrollTop = document.getElementById('avChat').scrollHeight;
+
+				} catch (e) {
+					const body = loadingMsg.querySelector('.av-msg-body');
+					body.innerHTML = '<div style="color:var(--danger)"><i class="fa-solid fa-triangle-exclamation"></i> Network error — is the server running?</div>';
+				} finally {
+					avRunning = false;
+					document.getElementById('avSendBtn').disabled = false;
+					document.getElementById('avInput').focus();
+				}
+			}
+
+			// WebSocket agent events (real-time step updates)
+			function initAgentWebSocket() {
+				if (!socket) return;
+				socket.on('agent_event', (data) => {
+					// Events can update the last assistant message in real-time
+					// For now, the final HTTP response handles rendering
+				});
+			}
+			// INIT
+			// ================================================================
+			document.addEventListener('DOMContentLoaded', async () => {
+				loadInterfaces();
+				initAgentWebSocket();
+				try {
+					const res = await fetch('/api/mode');
+					const data = await res.json();
+					if (data.live_capture) {
+						liveMode = true;
+						setMode('live', 'Live Capture');
+						document.getElementById('sectionPackets').style.display = 'block';
+						initWebSocket();
+						startStatsPoller();
+					} else if (data.has_parquet) {
+						pcapMode = true;
+						setMode('pcap', 'PCAP Analysis');
+						await loadPcapStats();
+						await loadFlows();
 					}
 				} catch (e) {
-					agentHideTyping(typingEl);
-					agentAppendBubble('assistant', '⚠️ Network error — is the server running?', null, false);
-				} finally {
-					agentBusy = false;
-					document.getElementById('agentSendBtn').disabled = false;
-					input.focus();
+					console.error(e);
 				}
-			}
-
-
-			function agentAppendBubble(role, text, toolUsed, isChatMode) {
-				const msgs = document.getElementById('agentMessages');
-				const bubble = document.createElement('div');
-				bubble.className = `agent-bubble ${role}`;
-
-				let content = '';
-				if (role === 'assistant') {
-					if (isChatMode) {
-						content += `<div class="tool-badge chat-badge"><i class="fa-solid fa-comments"></i>&nbsp;Chat</div>`;
-					} else if (toolUsed && toolUsed !== 'general_answer') {
-						const toolIcons = {
-							get_stats: 'fa-gauge-high', get_vpn: 'fa-lock', get_top_talkers: 'fa-arrow-up-wide-short',
-							check_ip: 'fa-magnifying-glass', get_flows: 'fa-arrows-left-right', inject_packet: 'fa-location-dot',
-							explain_packet: 'fa-book-open', analyze_traffic: 'fa-chart-bar',
-							get_threat_summary: 'fa-shield-halved', get_vpn_signals: 'fa-signal',
-							scan_anomalies: 'fa-triangle-exclamation', get_bandwidth_analysis: 'fa-wave-square',
-							get_behaviour_summary: 'fa-brain', get_device_behaviour: 'fa-brain',
-							get_session_info: 'fa-circle-info', get_capture_devices: 'fa-ethernet',
-							get_switch_devices: 'fa-plug', get_switch_vpn_alerts: 'fa-bell',
-							check_abuse_ip: 'fa-user-slash', get_geo_ip: 'fa-earth-americas',
-							export_report: 'fa-file-export',
-						};
-						const firstTool = toolUsed.split(' → ')[0].trim();
-						const icon = toolIcons[firstTool] || 'fa-robot';
-						const label = toolUsed.replace(/_/g, ' ').replace(' → ', ' · ');
-						content += `<div class="tool-badge"><i class="fa-solid ${icon}"></i>&nbsp;${label}</div>`;
-					}
-				}
-				content += agentFormatMarkdown(text);
-				bubble.innerHTML = content;
-				msgs.appendChild(bubble);
-				msgs.scrollTop = msgs.scrollHeight;
-			}
-
-
-			function agentFormatMarkdown(text) {
-				// Markdown: **bold**, `code`, bullet lists, HR dividers, newlines
-				return text
-					.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-					.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
-					.replace(/`([^`]+)`/g, '<code>$1</code>')
-					.replace(/^---$/gm, '<hr style="border-color:rgba(255,255,255,0.1);margin:8px 0">')
-					.replace(/^### (.+)$/gm, '<strong style="font-size:12px;color:var(--accent)">$1</strong>')
-					.replace(/^## (.+)$/gm, '<strong style="font-size:13px">$1</strong>')
-					.replace(/^# (.+)$/gm, '<strong style="font-size:14px">$1</strong>')
-					.replace(/^- (.+)/gm, '• $1')
-					.replace(/^(\d+)\. (.+)/gm, '$1. $2')
-					.replace(/\n/g, '<br>');
-			}
-
-			function agentShowTyping() {
-				const msgs = document.getElementById('agentMessages');
-				const el = document.createElement('div');
-				el.className = 'agent-typing';
-				el.innerHTML = '<div class="typing-dot"></div><div class="typing-dot"></div><div class="typing-dot"></div>';
-				msgs.appendChild(el);
-				msgs.scrollTop = msgs.scrollHeight;
-				return el;
-			}
-
-			function agentHideTyping(el) {
-				if (el && el.parentNode) el.parentNode.removeChild(el);
-			}
+			});
 
 			function agentPlotOnMap(action) {
 				const src = action.src, dst = action.dst;
@@ -3160,31 +3148,6 @@
 				setTimeout(() => agentInjectLines.forEach(l => { if (l.openPopup) l.openPopup(); }), 600);
 			}
 
-			// ================================================================
-			// INIT
-			// ================================================================
-			document.addEventListener('DOMContentLoaded', async () => {
-				loadInterfaces();
-				try {
-					const res = await fetch('/api/mode');
-					const data = await res.json();
-					if (data.live_capture) {
-						liveMode = true;
-						setMode('live', 'Live Capture');
-						document.getElementById('sectionPackets').style.display = 'block';
-						initWebSocket();
-						startStatsPoller();
-					} else if (data.has_parquet) {
-						pcapMode = true;
-						setMode('pcap', 'PCAP Analysis');
-						// Sequential: stats first (warms geo/VPN cache), then flows
-						await loadPcapStats();
-						await loadFlows();
-					}
-				} catch (e) {
-					console.error(e);
-				}
-			});
 		</script>
 	</body>
 </html>
